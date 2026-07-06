@@ -24,6 +24,8 @@ class ClientSession:
         self.dispatcher = dispatcher
         self.node_id: str | None = None
         self._buffer = b""
+        self._pending_commands : set[int]
+        self._pending_commands = set()
 
     def run(self) -> None:
         peer = f"{self.address[0]}:{self.address[1]}"
@@ -97,6 +99,11 @@ class ClientSession:
         node_id = ack.get("node_id")
         if isinstance(node_id, str) and node_id:
             self.node_id = node_id
+        ack_data = self._extract_ack(ack)
+        if not ack_data:
+            return
+        cid,status = ack_data
+        self._pending_commands.remove(cid)
         print(f"[ack] {ack}")
 
     def _extract_metric(self, metric: dict[str,Any]) -> tuple[int,int,int,str,str | None] | None:
@@ -131,6 +138,22 @@ class ClientSession:
 
         return cpu,ram,latency_ms,service_web, metric.get("event_log")
 
+    def _extract_ack(self, ack: dict[str,Any]) -> tuple[int,str] | None:
+        cid = ack.get("command_id")
+        if not isinstance(cid,int):
+            self.send_error("INVALID_MESSAGE", "invalid command id")
+            return None
+        if not cid in self._pending_commands:
+            self.send_error("INVALID_MESSAGE", "repeated ack or ack for nonexistent command")
+            return None
+        status = ack.get("status")
+        if status not in ["applied","failed"]:
+            self.send_error("INVALID_MESSAGE", "invalid status code")
+            return None 
+
+        return cid,status
+
+
     def _send_orders(self, cpu:int,ram:int,latency_ms:int,service_web:str,event_log: str | None):
         if cpu > 90 : self.send_command("reduce_cpu","cpu above 90")
         if ram > 90 : self.send_command("reduce_cpu","ram above 90")
@@ -143,9 +166,9 @@ class ClientSession:
         print(f"[error] {self.node_id}: {error}")
 
     def send_command(self, action: str, reason: str) -> None:
-        command = self.dispatcher.build_command(action, reason)
+        command, command_id = self.dispatcher.build_command(action, reason)
+        self._pending_commands.add(command_id)
         self._send(command)
-
         print(f"[command] {self.node_id}: {command}")
 
     def _send(self, message: dict[str, Any]) -> None:

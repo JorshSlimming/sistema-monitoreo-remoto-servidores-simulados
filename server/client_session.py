@@ -47,17 +47,21 @@ class ClientSession:
             print(f"[server] client disconnected from {peer}")
 
     def _process_buffer(self) -> None:
+
         separator = self.config.message_separator.encode(self.config.encoding)
         while separator in self._buffer:
             line, self._buffer = self._buffer.split(separator, 1)
             if line:
                 self._handle_line(line)
+        if self._buffer:
+            self._handle_line(self._buffer)
 
     def _handle_line(self, line: bytes) -> None:
         try:
             message = self._decode_json_line(line)
         except ValueError as exc:
             print(f"[server] invalid JSON from {self.address[0]}:{self.address[1]}: {exc}")
+            self.send_error("INVALID_JSON", "received malformed JSON")
             return
 
         message_type = message.get("type")
@@ -86,6 +90,11 @@ class ClientSession:
         if isinstance(node_id, str) and node_id:
             self.node_id = node_id
         print(f"[ack] {ack}")
+
+    def send_error(self,code,message):
+        error = {"type": "error", "code": code, "message": message}
+        self._send(error)
+        print(f"[error] {self.node_id}: {error}")
 
     def send_command(self, action: str, reason: str) -> None:
         command = self.dispatcher.build_command(action, reason)

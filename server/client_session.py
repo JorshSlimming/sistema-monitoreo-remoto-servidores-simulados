@@ -1,5 +1,5 @@
-from ast import Tuple
 import json
+from numbers import Number
 import socket
 from typing import Any
 
@@ -106,9 +106,9 @@ class ClientSession:
         self._pending_commands.remove(cid)
         print(f"[ack] {ack}")
 
-    def _extract_metric(self, metric: dict[str,Any]) -> tuple[int,int,int,str,str | None] | None:
+    def _extract_metric(self, metric: dict[str,Any]) -> tuple[float,float,float,str,str | None] | None:
         cpu = metric.get("cpu")
-        if not isinstance(cpu,int):
+        if not isinstance(cpu,(int,float)):
             self.send_error("INVALID_MESSAGE", "cpu must be a number")
             return None 
         if cpu < 0 or cpu > 100:
@@ -116,7 +116,7 @@ class ClientSession:
             return None 
 
         ram = metric.get("ram")
-        if not isinstance(ram,int):
+        if not isinstance(ram,(int,float)):
             self.send_error("INVALID_MESSAGE", "ram must be a number")
             return None 
         if ram < 0 or ram > 100:
@@ -124,7 +124,7 @@ class ClientSession:
             return None 
 
         latency_ms = metric.get("latency_ms")
-        if not isinstance(latency_ms,int):
+        if not isinstance(latency_ms,(int,float)):
             self.send_error("INVALID_MESSAGE", "latency must be a number")
             return None 
         if latency_ms < 0:

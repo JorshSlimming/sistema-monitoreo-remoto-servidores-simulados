@@ -90,7 +90,7 @@ class ClientSession:
         if not (metrics := self._extract_metric(metric)):
             return
         cpu,ram,latency_ms,service_web,event_log = metrics
-
+        self._send_orders(cpu,ram,latency_ms,service_web,event_log)
         print(f"[metric] {self.node_id}: {metric}")
 
     def _handle_ack(self, ack: dict[str, Any]) -> None:
@@ -131,7 +131,11 @@ class ClientSession:
 
         return cpu,ram,latency_ms,service_web, metric.get("event_log")
 
-
+    def _send_orders(self, cpu:int,ram:int,latency_ms:int,service_web:str,event_log: str | None):
+        if cpu > 90 : self.send_command("reduce_cpu","cpu above 90")
+        if ram > 90 : self.send_command("reduce_cpu","ram above 90")
+        if latency_ms > 200 : self.send_command("fix_latency", "latency above 200")
+        if service_web == "falla" : self.send_command("restart_service", "failing web service, please restart")
 
     def send_error(self,code,message):
         error = {"type": "error", "code": code, "message": message}
@@ -141,6 +145,7 @@ class ClientSession:
     def send_command(self, action: str, reason: str) -> None:
         command = self.dispatcher.build_command(action, reason)
         self._send(command)
+
         print(f"[command] {self.node_id}: {command}")
 
     def _send(self, message: dict[str, Any]) -> None:

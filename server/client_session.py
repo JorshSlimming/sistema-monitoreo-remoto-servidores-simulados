@@ -1,3 +1,4 @@
+from ast import Tuple
 import json
 import socket
 from typing import Any
@@ -80,9 +81,16 @@ class ClientSession:
             self.node_id = f"unknown-{self.address[0]}:{self.address[1]}"
 
         peer = f"{self.address[0]}:{self.address[1]}"
-        seq = metric.get("seq") if isinstance(metric.get("seq"), int) else None
+        seq = metric.get("seq") if isinstance(metric.get("seq"), int) and metric.get("seq",-1) > 0 else self.send_error("INVALID_MESSAGE", "sequence number must be a positive integer") 
+        if not seq:
+            return
         self.state.mark_connected(self.node_id, peer, seq)
         self.state.mark_seen(self.node_id, seq)
+
+        if not (metrics := self._extract_metric(metric)):
+            return
+        cpu,ram,latency_ms,service_web,event_log = metrics
+
         print(f"[metric] {self.node_id}: {metric}")
 
     def _handle_ack(self, ack: dict[str, Any]) -> None:
@@ -90,6 +98,40 @@ class ClientSession:
         if isinstance(node_id, str) and node_id:
             self.node_id = node_id
         print(f"[ack] {ack}")
+
+    def _extract_metric(self, metric: dict[str,Any]) -> tuple[int,int,int,str,str | None] | None:
+        cpu = metric.get("cpu")
+        if not isinstance(cpu,int):
+            self.send_error("INVALID_MESSAGE", "cpu must be a number")
+            return None 
+        if cpu < 0 or cpu > 100:
+            self.send_error("INVALID_MESSAGE", "cpu must be between 0 and 100")
+            return None 
+
+        ram = metric.get("ram")
+        if not isinstance(ram,int):
+            self.send_error("INVALID_MESSAGE", "ram must be a number")
+            return None 
+        if ram < 0 or ram > 100:
+            self.send_error("INVALID_MESSAGE", "ram must be between 0 and 100")
+            return None 
+
+        latency_ms = metric.get("latency_ms")
+        if not isinstance(latency_ms,int):
+            self.send_error("INVALID_MESSAGE", "latency must be a number")
+            return None 
+        if latency_ms < 0:
+            self.send_error("INVALID_MESSAGE", "latency must be greater or equal to 0")
+            return None 
+
+        service_web = metric.get("service_web", "invalid")
+        if not isinstance(service_web,str) or service_web not in ["ok", "falla"]:
+            self.send_error("INVALID_MESSAGE", "invalid service_web value")
+            return None
+
+        return cpu,ram,latency_ms,service_web, metric.get("event_log")
+
+
 
     def send_error(self,code,message):
         error = {"type": "error", "code": code, "message": message}

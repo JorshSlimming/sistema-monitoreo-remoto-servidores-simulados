@@ -1,0 +1,1171 @@
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{geometry}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{float}
+
+\geometry{margin=2.2cm}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.12}
+\setlist[itemize]{noitemsep, topsep=2pt}
+\setlist[enumerate]{noitemsep, topsep=2pt}
+\sloppy
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdftitle={Informe tecnico - Sistema de Monitoreo Remoto},
+  pdfauthor={Grupo de Redes de Computadores}
+}
+
+\lstdefinestyle{terminal}{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  backgroundcolor=\color{gray!8}
+}
+
+\lstdefinestyle{json}{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  backgroundcolor=\color{gray!8}
+}
+
+\title{\textbf{Sistema de Monitoreo Remoto de Servidores Simulados}\\
+\large Informe tecnico final}
+\author{Curso: Redes de Computadores\\
+Docente: Diego Arroyo Navarrete\\
+Integrantes: \textit{[completar por el grupo]}}
+\date{\textit{[completar fecha]}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Este informe presenta el diseno, implementacion y validacion de un sistema de
+monitoreo remoto de servidores simulados. El proyecto usa comunicacion TCP real,
+clientes persistentes, autenticacion con clave precompartida por nodo, desafio
+con nonce, cifrado simetrico de mensajes de aplicacion, persistencia SQLite y un
+dashboard web para demostracion en tiempo real. El servidor detecta anomalias en
+CPU, RAM, latencia, servicio web y eventos, emite comandos correctivos y registra
+ACKs para mantener trazabilidad. El resultado es un prototipo reproducible,
+defendible desde redes de computadores y acompanado por pruebas automatizadas,
+escenarios de demo, evidencia SQLite, Wireshark/tshark y Nmap.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Resumen ejecutivo}
+
+El sistema implementado resuelve un caso acotado de monitoreo remoto: varios
+nodos simulados reportan periodicamente metricas operacionales a un servidor
+central. El servidor recibe esas metricas por TCP, autentica al nodo, procesa el
+mensaje, persiste la informacion y, cuando corresponde, responde con comandos de
+mitigacion. El cliente no solo recibe comandos, sino que modifica su estado
+simulado para que las metricas posteriores muestren recuperacion progresiva.
+
+La version final incorpora una decision importante de seguridad: antes de aceptar
+metricas, el servidor exige un handshake basado en PSK. El cliente se identifica
+con su \texttt{node\_id}; si existe una clave asociada, el servidor envia un nonce
+y el cliente responde una prueba HMAC. Despues de validar esa prueba, ambos lados
+derivan una clave de sesion y los mensajes de aplicacion viajan dentro de frames
+\texttt{secure} cifrados y autenticados.
+
+El proyecto esta pensado para una defensa practica. La demostracion se puede
+hacer desde el dashboard, ejecutando escenarios como CPU alta o multi-nodo. Al
+mismo tiempo, la evidencia tecnica se obtiene desde SQLite, pruebas unitarias e
+integracion, capturas de trafico y escaneo de puerto. Asi, el sistema no depende
+solo de una interfaz visual: cada comportamiento mostrado en la demo tiene una
+huella persistida o verificable.
+
+\begin{longtable}{|p{0.28\textwidth}|p{0.62\textwidth}|}
+\hline
+\textbf{Aspecto} & \textbf{Estado final} \\
+\hline
+Comunicacion & TCP real, puerto 5000 por defecto, clientes persistentes. \\
+\hline
+Autenticacion & PSK por nodo, 32 claves listas: \texttt{node-01} a \texttt{node-32}. \\
+\hline
+Confidencialidad & Frames de aplicacion cifrados despues del handshake. \\
+\hline
+Servidor & Multicliente con hilos, validacion, deteccion y comandos. \\
+\hline
+Cliente & Reconexion automatica y mitigacion simulada local. \\
+\hline
+Persistencia & SQLite con tablas \texttt{metrics}, \texttt{commands} y \texttt{acks}. \\
+\hline
+Dashboard & API local y frontend en tiempo real para demo. \\
+\hline
+Validacion & 63 pruebas automatizadas, todas aprobadas en la ultima ejecucion. \\
+\hline
+\end{longtable}
+
+\newpage
+\section{Problema, alcance y objetivos}
+
+\subsection{Problema abordado}
+
+En muchos entornos operacionales se requiere observar el estado de equipos o
+servicios sin acceso fisico directo. Aunque este proyecto no controla hardware
+real, modela el problema central de redes: existe un conjunto de nodos remotos,
+un canal de comunicacion, un servidor central y un flujo de mensajes que debe ser
+validado, procesado y registrado. En ese contexto, no basta con imprimir metricas
+en pantalla; el sistema debe demostrar conexion real, errores manejados,
+persistencia y evidencia reproducible.
+
+El problema se vuelve mas interesante cuando los nodos no solo reportan datos,
+sino que tambien reciben ordenes. Por ejemplo, si un nodo reporta CPU alta, el
+servidor debe emitir una accion correctiva y esperar una confirmacion. Ese flujo
+obliga a resolver bidireccionalidad, correlacion de comandos con ACKs y estados
+como \texttt{pending}, \texttt{confirmed}, \texttt{failed} o \texttt{timed\_out}.
+
+\subsection{Alcance funcional}
+
+El alcance del sistema incluye simulacion de nodos, comunicacion TCP, seguridad
+basica mejorada con PSK, persistencia, visualizacion y pruebas. No se busca
+implementar un producto de monitoreo industrial completo ni un protocolo
+criptografico productivo equivalente a TLS. El foco esta en construir un
+prototipo claro, ejecutable localmente y defendible desde los contenidos del
+curso.
+
+\subsection{Objetivo general}
+
+Disenar e implementar un sistema cliente-servidor que permita monitorear nodos
+simulados, registrar actividad, detectar anomalias, emitir comandos correctivos
+y demostrar su funcionamiento mediante pruebas automatizadas y analisis de red.
+
+\subsection{Objetivos especificos}
+
+\begin{itemize}
+  \item Implementar comunicacion TCP real entre clientes y servidor.
+  \item Mantener clientes persistentes con reconexion automatica.
+  \item Autenticar nodos mediante PSK, nonce y prueba HMAC.
+  \item Cifrar los mensajes de aplicacion despues del handshake.
+  \item Validar estructura, tipos y rangos de las metricas recibidas.
+  \item Persistir metricas, comandos y ACKs en SQLite.
+  \item Visualizar estado y eventos en un dashboard local.
+  \item Entregar escenarios reproducibles y evidencia para la defensa.
+\end{itemize}
+
+\newpage
+\section{Integrantes y roles}
+
+La distribucion de roles permite explicar el proyecto como un trabajo por capas:
+arquitectura, cliente, servidor/frontend y persistencia/evidencia. La tabla debe
+ser completada con los nombres reales del grupo antes de entregar el PDF.
+
+\begin{longtable}{|p{0.22\textwidth}|p{0.26\textwidth}|p{0.42\textwidth}|}
+\hline
+\textbf{Integrante} & \textbf{Rol principal} & \textbf{Aporte esperado o realizado} \\
+\hline
+\textit{[Nombre]} & Arquitectura y documentacion & Diseno general, diagrama, contrato tecnico, coherencia del informe y preparacion de defensa. \\
+\hline
+\textit{[Nombre]} & Cliente simulado & Cliente TCP persistente, generacion de metricas, modos anomalos, reconexion y mitigacion local. \\
+\hline
+\textit{[Nombre]} & Servidor y dashboard & Servidor multicliente, sesiones, reglas de anomalia, comandos y visualizacion web. \\
+\hline
+\textit{[Nombre]} & Persistencia, pruebas y red & SQLite, pruebas automatizadas, escenarios, Wireshark/tshark, Nmap y evidencia final. \\
+\hline
+\end{longtable}
+
+\subsection{Relacion entre roles y modulos}
+
+Aunque los roles se separan para organizar el trabajo, el proyecto final exige
+integracion. El cliente no se valida sin servidor; el servidor no es demostrable
+sin persistencia; el dashboard no debe inventar estado, sino leer datos reales; y
+la documentacion debe coincidir con el comportamiento implementado. Por eso, la
+entrega se revisa como sistema completo y no como archivos aislados.
+
+\begin{longtable}{|p{0.28\textwidth}|p{0.58\textwidth}|}
+\hline
+\textbf{Modulo} & \textbf{Responsabilidad dentro del sistema} \\
+\hline
+\texttt{client/tcp\_client.py} & Nodo simulado persistente, metricas, comandos, ACKs y reconexion. \\
+\hline
+\texttt{server/client\_session.py} & Handshake seguro, procesamiento de metricas y ACKs, envio de errores y comandos. \\
+\hline
+\texttt{shared/secure\_channel.py} & Handshake PSK, derivacion de clave, cifrado e integridad de frames. \\
+\hline
+\texttt{storage/store.py} & Persistencia SQLite para metricas, comandos y confirmaciones. \\
+\hline
+\texttt{frontend/dashboard\_server.py} & API HTTP local, estado consolidado y ejecucion de escenarios desde la UI. \\
+\hline
+\texttt{tests/} & Evidencia automatizada de comportamiento esperado. \\
+\hline
+\end{longtable}
+
+\newpage
+\section{Arquitectura general}
+
+La arquitectura sigue un modelo cliente-servidor centralizado. Los nodos abren
+conexiones TCP hacia el servidor. El servidor acepta multiples conexiones y crea
+una sesion por cliente. Cada sesion realiza autenticacion PSK antes de procesar
+datos de aplicacion. Una vez autenticada la conexion, las metricas se descifran,
+validan, persisten y evaluan contra reglas de anomalia. Si alguna regla se
+cumple, se genera un comando, se persiste como pendiente y se envia al cliente.
+
+\begin{figure}[H]
+\centering
+\fbox{\begin{minipage}{0.95\textwidth}
+\centering
+\begin{tabular}{ccc}
+\textbf{Clientes TCP} & & \textbf{Servidor TCP} \\
+\begin{tabular}{|c|}
+\hline
+node-01 ... node-32\\
+client/tcp\_client.py\\
+metricas + ACKs\\
+\hline
+\end{tabular}
+& \(\xrightarrow{\quad TCP / PSK + frames secure \quad}\) &
+\begin{tabular}{|c|}
+\hline
+connection\_manager.py\\
+client\_session.py\\
+server\_state.py\\
+command\_dispatcher.py\\
+\hline
+\end{tabular}
+\\[1.4em]
+& & \(\downarrow\) \\
+& &
+\begin{tabular}{|c|}
+\hline
+SQLite\\
+metrics / commands / acks\\
+\hline
+\end{tabular}
+\\[1.4em]
+& & \(\downarrow\) \\
+& &
+\begin{tabular}{|c|}
+\hline
+Dashboard HTTP\\
+/api/state / /api/status / /api/scenario\\
+\hline
+\end{tabular}
+\end{tabular}
+\end{minipage}}
+\caption{Arquitectura logica del sistema.}
+\end{figure}
+
+\subsection{Capas del sistema}
+
+\textbf{Capa de comunicacion.} Usa sockets TCP. El servidor escucha en el puerto
+5000 por defecto y los clientes se conectan a ese puerto. TCP entrega
+confiabilidad de transporte, orden de bytes y deteccion de cierre de conexion,
+pero no entrega por si solo autenticacion ni cifrado.
+
+\textbf{Capa de seguridad de aplicacion.} Antes de enviar metricas, el cliente
+ejecuta un handshake PSK. Esta capa esta implementada en
+\texttt{shared/secure\_channel.py}. Su tarea es envolver el socket en una
+abstraccion que envia y recibe objetos JSON cifrados.
+
+\textbf{Capa de dominio.} Define que es una metrica valida, cuando existe una
+anomalia, que comando corresponde y como se interpreta un ACK. Esta logica vive
+principalmente en \texttt{server/client\_session.py},
+\texttt{server/server\_state.py} y \texttt{client/tcp\_client.py}.
+
+\textbf{Capa de persistencia y observabilidad.} SQLite registra la historia del
+sistema. El dashboard consulta esa historia y la transforma en tablas, graficos y
+eventos utiles para la presentacion.
+
+\newpage
+\section{Diseno del protocolo}
+
+\subsection{Formato de linea}
+
+El sistema usa JSON Lines: cada mensaje serializado termina en salto de linea.
+Esta decision simplifica el framing sobre TCP, ya que TCP no preserva fronteras
+de mensajes. Con JSON Lines, el receptor acumula bytes hasta encontrar
+\texttt{\textbackslash n}; luego parsea esa linea como objeto JSON.
+
+\subsection{Handshake PSK}
+
+El handshake ocurre en texto JSON antes de activar el canal cifrado. El cliente
+envia su identificador de nodo, el servidor busca la PSK asociada y responde con
+un nonce. El cliente genera un nonce propio y calcula una prueba HMAC usando la
+PSK, el \texttt{node\_id}, el nonce del servidor y el nonce del cliente.
+
+\begin{lstlisting}[style=json]
+Cliente -> Servidor:
+{"type":"hello","node_id":"node-01"}
+
+Servidor -> Cliente:
+{"type":"challenge","node_id":"node-01","nonce":"..."}
+
+Cliente -> Servidor:
+{"type":"challenge_response","node_id":"node-01",
+ "client_nonce":"...","proof":"..."}
+
+Servidor -> Cliente:
+{"type":"ready","node_id":"node-01"}
+\end{lstlisting}
+
+Si el nodo no existe, si falta un campo o si el HMAC no coincide, el servidor
+responde con \texttt{AUTH\_FAILED} o un error equivalente y la sesion no queda
+habilitada para recibir metricas.
+
+\subsection{Derivacion de clave de sesion}
+
+Una vez autenticada la identidad, ambas partes derivan una clave de sesion desde
+la PSK y los nonces. Esto evita usar directamente la PSK como clave de cifrado de
+todos los mensajes. La clave de sesion se separa internamente en una clave para
+generar flujo de cifrado y otra para etiquetas de integridad.
+
+\subsection{Frame seguro}
+
+Despues del mensaje \texttt{ready}, el payload de aplicacion no viaja como JSON
+plano. Viaja dentro de un frame \texttt{secure}.
+
+\begin{lstlisting}[style=json]
+{
+  "type": "secure",
+  "seq": 0,
+  "nonce": "...",
+  "ciphertext": "...",
+  "tag": "..."
+}
+\end{lstlisting}
+
+El campo \texttt{seq} evita reordenamientos o repeticiones simples dentro de la
+sesion. El \texttt{nonce} se usa para generar un flujo distinto por mensaje. El
+\texttt{ciphertext} contiene el JSON de aplicacion cifrado. El \texttt{tag}
+autentica la secuencia, nonce y ciphertext, por lo que una alteracion del frame
+produce error de protocolo.
+
+\newpage
+\section{Mensajes de aplicacion}
+
+\subsection{Metric}
+
+El mensaje \texttt{metric} representa el estado reportado por un nodo. Incluye
+identificador, numero de secuencia y variables observables. Aunque viaja cifrado,
+su estructura logica es la siguiente:
+
+\begin{lstlisting}[style=json]
+{
+  "type": "metric",
+  "node_id": "node-01",
+  "seq": 1,
+  "cpu": 45.0,
+  "ram": 60.0,
+  "latency_ms": 35,
+  "service_web": "ok",
+  "event_log": "normal",
+  "token": "node-01-secret",
+  "scenario": "normal",
+  "anomaly_active": false,
+  "mitigation_active": false,
+  "mitigation_type": ""
+}
+\end{lstlisting}
+
+El servidor valida que el \texttt{node\_id} del mensaje coincida con el nodo
+autenticado en el canal seguro. Tambien valida tipos y rangos: CPU y RAM deben
+estar entre 0 y 100, la latencia no puede ser negativa y el servicio web solo
+acepta \texttt{ok} o \texttt{falla}.
+
+\subsection{Command}
+
+Cuando el servidor detecta una anomalia, responde con un comando correctivo.
+
+\begin{lstlisting}[style=json]
+{
+  "type": "command",
+  "command_id": 1,
+  "action": "reduce_cpu",
+  "reason": "cpu above 90"
+}
+\end{lstlisting}
+
+El \texttt{command\_id} permite correlacionar la orden con el ACK posterior. El
+comando se persiste con estado inicial \texttt{pending}. Cuando llega el ACK, el
+estado cambia a \texttt{confirmed} o \texttt{failed}.
+
+\subsection{ACK}
+
+El ACK confirma si el cliente aplico o no la orden. En la demo, el cliente agrega
+informacion de estado antes y despues de aplicar la mitigacion.
+
+\begin{lstlisting}[style=json]
+{
+  "type": "ack",
+  "node_id": "node-01",
+  "command_id": 1,
+  "status": "applied",
+  "command": "reduce_cpu",
+  "before": {"cpu": null, "mitigation_active": false},
+  "after": {"cpu": 95.0, "mitigation_active": true}
+}
+\end{lstlisting}
+
+\subsection{Error}
+
+El mensaje \texttt{error} se usa para indicar fallas de autenticacion,
+validacion o protocolo. En una implementacion real, convendria separar errores
+expuestos al cliente de errores internos detallados, pero para la demo resulta
+util mostrar el motivo basico del rechazo.
+
+\newpage
+\section{Autenticacion, claves y limitaciones criptograficas}
+
+\subsection{Claves precompartidas}
+
+La demo deja configuradas 32 claves, desde \texttt{node-01} hasta
+\texttt{node-32}. El patron usado es \texttt{node-XX-secret}. Por ejemplo:
+
+\begin{longtable}{|p{0.26\textwidth}|p{0.48\textwidth}|}
+\hline
+\textbf{Nodo} & \textbf{PSK de demo} \\
+\hline
+\texttt{node-01} & \texttt{node-01-secret} \\
+\hline
+\texttt{node-02} & \texttt{node-02-secret} \\
+\hline
+\texttt{node-03} & \texttt{node-03-secret} \\
+\hline
+\texttt{...} & \texttt{...} \\
+\hline
+\texttt{node-32} & \texttt{node-32-secret} \\
+\hline
+\end{longtable}
+
+Estas claves se encuentran en el codigo para facilitar ejecucion y evaluacion.
+En un despliegue real, las claves no deberian estar escritas directamente en el
+repositorio; deberian provenir de variables de entorno, un gestor de secretos o
+un archivo protegido fuera del control de versiones.
+
+\subsection{Por que usar nonce}
+
+El nonce evita que la prueba de identidad sea siempre igual. Si el cliente
+enviara simplemente la clave o un hash fijo, una captura de red podria reutilizar
+ese valor. Con el nonce, el servidor exige una prueba distinta en cada conexion.
+El cliente demuestra que conoce la PSK sin enviarla directamente.
+
+\subsection{Alcance del cifrado}
+
+La implementacion usa biblioteca estandar de Python. Se construye un flujo de
+cifrado derivado de HMAC-SHA256 y se agrega una etiqueta HMAC de integridad. Esto
+es suficiente para una demo academica reproducible sin dependencias externas, y
+permite observar en Wireshark que los payloads de aplicacion ya no aparecen en
+claro despues del handshake.
+
+Sin embargo, no se presenta como reemplazo productivo de TLS ni de una AEAD
+auditada como AES-GCM o ChaCha20-Poly1305. La conclusion correcta para la defensa
+es que el proyecto demuestra conceptos de autenticacion, derivacion de clave,
+confidencialidad e integridad, pero que un sistema real deberia usar TLS o una
+biblioteca criptografica especializada.
+
+\subsection{Controles implementados}
+
+\begin{itemize}
+  \item Nodo desconocido: se rechaza en handshake.
+  \item Prueba HMAC invalida: se rechaza antes de crear canal seguro.
+  \item Mensaje fuera de secuencia: se rechaza el frame.
+  \item Tag invalido: se rechaza el frame por integridad.
+  \item \texttt{node\_id} distinto dentro del canal: se rechaza el mensaje.
+\end{itemize}
+
+\newpage
+\section{Servidor TCP}
+
+\subsection{Aceptacion de conexiones}
+
+El servidor escucha conexiones entrantes en el host y puerto configurados. Por
+defecto se usa el puerto 5000. Cada conexion aceptada se atiende en una sesion
+independiente, lo que permite que varios clientes reporten metricas al mismo
+tiempo sin bloquearse entre si.
+
+\subsection{Sesion de cliente}
+
+La clase de sesion tiene tres responsabilidades principales. Primero, establece
+el canal seguro mediante \texttt{server\_handshake}. Segundo, procesa mensajes de
+aplicacion descifrados. Tercero, envia respuestas cifradas, como comandos o
+errores.
+
+El flujo interno simplificado es:
+
+\begin{enumerate}
+  \item aceptar socket ya conectado;
+  \item leer \texttt{hello};
+  \item autenticar PSK con nonce;
+  \item crear \texttt{SecureSocket};
+  \item leer frames seguros en bucle;
+  \item despachar \texttt{metric} o \texttt{ack};
+  \item cerrar y marcar desconexion al terminar.
+\end{enumerate}
+
+\subsection{Validacion de metricas}
+
+La validacion no se limita a parsear JSON. El servidor revisa que las metricas
+tengan valores razonables. Por ejemplo, CPU=150 se rechaza aunque sea JSON valido.
+Esto evita que datos corruptos entren a la base y que el dashboard muestre estados
+imposibles.
+
+\begin{longtable}{|p{0.24\textwidth}|p{0.58\textwidth}|}
+\hline
+\textbf{Campo} & \textbf{Regla de validacion} \\
+\hline
+\texttt{node\_id} & Debe existir y coincidir con el nodo autenticado. \\
+\hline
+\texttt{seq} & Entero mayor o igual a 0. \\
+\hline
+\texttt{cpu} & Numero entre 0 y 100. \\
+\hline
+\texttt{ram} & Numero entre 0 y 100. \\
+\hline
+\texttt{latency\_ms} & Numero mayor o igual a 0. \\
+\hline
+\texttt{service\_web} & Valor \texttt{ok} o \texttt{falla}. \\
+\hline
+\end{longtable}
+
+\subsection{Cooldown anti-spam}
+
+El servidor evita emitir comandos duplicados de manera excesiva. Si un nodo ya
+tiene una accion pendiente o confirmada recientemente, el sistema suprime el
+comando repetido. Esto mejora la demo: no se llena el historial con decenas de
+\texttt{reduce\_cpu} para la misma anomalia mientras el cliente aun se recupera.
+
+\newpage
+\section{Cliente TCP y simulacion de nodos}
+
+\subsection{Cliente persistente}
+
+El cliente real se ejecuta con \texttt{python -m client.tcp\_client}. Mantiene una
+conexion TCP abierta, envia metricas cada cierto intervalo y escucha comandos del
+servidor. Si la conexion se pierde, espera cinco segundos e intenta reconectar,
+conservando el contador de secuencia.
+
+\begin{lstlisting}[style=terminal]
+python3 -m client.tcp_client --node-id node-01 --mode normal
+python3 -m client.tcp_client --node-id node-02 --mode high-cpu
+python3 -m client.tcp_client --node-id node-04 --mode high-latency --interval 3.0
+\end{lstlisting}
+
+\subsection{Modos de simulacion}
+
+\begin{longtable}{|p{0.25\textwidth}|p{0.62\textwidth}|}
+\hline
+\textbf{Modo} & \textbf{Comportamiento} \\
+\hline
+\texttt{normal} & Reporta valores base: CPU 35, RAM 45, latencia 40 ms. \\
+\hline
+\texttt{high-cpu} & Reporta CPU 95 y dispara \texttt{reduce\_cpu}. \\
+\hline
+\texttt{high-ram} & Reporta RAM 94 y dispara \texttt{reduce\_ram}. \\
+\hline
+\texttt{high-latency} & Reporta latencia 350 ms y dispara \texttt{fix\_latency}. \\
+\hline
+\texttt{service-failure} & Reporta servicio web en falla y dispara \texttt{restart\_service}. \\
+\hline
+\texttt{failed-event} & Reporta evento con texto \texttt{fallido} y dispara \texttt{normalize\_node}. \\
+\hline
+\texttt{chaos} & Cicla deterministamente por todas las anomalias. \\
+\hline
+\end{longtable}
+
+\subsection{Mitigacion local}
+
+La mitigacion es simulada, pero no es solo un ACK vacio. Cuando el cliente recibe
+un comando, actualiza su estado interno. Por ejemplo, ante \texttt{reduce\_cpu},
+las metricas posteriores comienzan a bajar gradualmente desde el valor anomalico
+hacia el valor base. Esto permite mostrar en el dashboard una historia completa:
+anomalia, comando, ACK y recuperacion.
+
+\subsection{Reconexion}
+
+La reconexion es importante porque demuestra comportamiento realista ante fallas.
+Si se detiene el servidor, el cliente detecta error de socket, informa la perdida
+de conexion y reintenta. Al volver a levantar el servidor, el cliente realiza de
+nuevo el handshake PSK y continua enviando metricas.
+
+\newpage
+\section{Reglas de anomalia y comandos}
+
+El servidor aplica reglas simples por umbral o evento. La intencion no es crear
+un motor de monitoreo complejo, sino representar claramente la transformacion de
+un dato recibido en una decision operacional.
+
+\begin{longtable}{|p{0.28\textwidth}|p{0.24\textwidth}|p{0.34\textwidth}|}
+\hline
+\textbf{Condicion} & \textbf{Comando} & \textbf{Interpretacion} \\
+\hline
+\texttt{cpu > 90} & \texttt{reduce\_cpu} & El nodo reporta uso excesivo de CPU. \\
+\hline
+\texttt{ram > 90} & \texttt{reduce\_ram} & El nodo reporta presion de memoria. \\
+\hline
+\texttt{latency\_ms > 200} & \texttt{fix\_latency} & El nodo experimenta latencia elevada. \\
+\hline
+\texttt{service\_web == falla} & \texttt{restart\_service} & El servicio web simulado no esta operativo. \\
+\hline
+\texttt{event\_log} contiene \texttt{fallido} & \texttt{normalize\_node} & El log contiene una falla operacional. \\
+\hline
+\end{longtable}
+
+\subsection{Estados de comando}
+
+Cada comando emitido se registra con estado. Esto permite auditar si el servidor
+solo mando ordenes o si realmente recibio confirmacion.
+
+\begin{longtable}{|p{0.24\textwidth}|p{0.62\textwidth}|}
+\hline
+\textbf{Estado} & \textbf{Significado} \\
+\hline
+\texttt{pending} & El comando fue enviado, pero aun no existe ACK valido. \\
+\hline
+\texttt{confirmed} & El cliente respondio con ACK \texttt{applied}. \\
+\hline
+\texttt{failed} & El cliente respondio con ACK \texttt{failed}. \\
+\hline
+\texttt{timed\_out} & El comando expiro sin confirmacion dentro del plazo. \\
+\hline
+\end{longtable}
+
+\subsection{Ejemplo narrativo}
+
+En el escenario CPU alta, el cliente \texttt{node-02} reporta CPU=95. El servidor
+valida la metrica, la persiste y detecta que supera el umbral. Luego construye un
+comando \texttt{reduce\_cpu}, lo persiste como \texttt{pending} y lo envia cifrado.
+El cliente recibe el comando, ajusta su estado, responde un ACK \texttt{applied} y
+las metricas siguientes muestran CPU bajando progresivamente.
+
+\newpage
+\section{Persistencia SQLite}
+
+La persistencia convierte la demo en evidencia. Sin base de datos, el sistema
+podria mostrar eventos momentaneos en consola, pero seria dificil auditar que
+ocurrio. SQLite permite consultar metricas, comandos y ACKs despues de ejecutar
+un escenario.
+
+\subsection{Tabla metrics}
+
+\begin{longtable}{|p{0.22\textwidth}|p{0.16\textwidth}|p{0.48\textwidth}|}
+\hline
+\textbf{Campo} & \textbf{Tipo} & \textbf{Descripcion} \\
+\hline
+\texttt{id} & INTEGER & Identificador autoincremental. \\
+\hline
+\texttt{node\_id} & TEXT & Nodo que reporto la metrica. \\
+\hline
+\texttt{seq} & INTEGER & Numero de secuencia del cliente. \\
+\hline
+\texttt{cpu} & REAL & Porcentaje de CPU. \\
+\hline
+\texttt{ram} & REAL & Porcentaje de RAM. \\
+\hline
+\texttt{latency\_ms} & REAL & Latencia en milisegundos. \\
+\hline
+\texttt{service\_web} & TEXT & Estado del servicio web. \\
+\hline
+\texttt{event\_log} & TEXT & Evento textual reportado. \\
+\hline
+\texttt{scenario} & TEXT & Modo de simulacion usado por el cliente. \\
+\hline
+\texttt{mitigation\_active} & INTEGER & Indica si el cliente esta mitigando. \\
+\hline
+\end{longtable}
+
+\subsection{Tabla commands}
+
+La tabla \texttt{commands} registra que orden emitio el servidor, hacia que nodo
+y en que estado quedo. Su valor no es solo historico; tambien sirve para verificar
+que los ACKs actualizan correctamente el estado.
+
+\subsection{Tabla acks}
+
+La tabla \texttt{acks} registra la confirmacion enviada por el cliente. En la
+defensa, esta tabla permite mostrar que la respuesta al comando no fue solo un
+evento visual del dashboard, sino una fila persistida y correlacionable.
+
+\subsection{Consultas utiles}
+
+\begin{lstlisting}[style=terminal]
+sqlite3 data/monitor.db "SELECT node_id, seq, cpu, ram FROM metrics ORDER BY id DESC LIMIT 10;"
+sqlite3 data/monitor.db "SELECT command_id, node_id, action, status FROM commands;"
+sqlite3 data/monitor.db "SELECT command_id, node_id, status FROM acks;"
+\end{lstlisting}
+
+\newpage
+\section{Dashboard y API HTTP}
+
+El dashboard no reemplaza las pruebas ni la evidencia, pero hace visible el
+comportamiento del sistema durante la presentacion. Sirve HTML, CSS y JavaScript
+desde un servidor HTTP local y consulta endpoints de API para obtener estado.
+
+\subsection{Fuente unica de verdad}
+
+El endpoint principal es \texttt{/api/state}. Este endpoint construye un snapshot
+desde SQLite y estado del servidor. El frontend no deberia inventar nodos activos
+ni comandos; debe reflejar lo que el backend conoce.
+
+\begin{longtable}{|p{0.28\textwidth}|p{0.58\textwidth}|}
+\hline
+\textbf{Endpoint} & \textbf{Uso} \\
+\hline
+\texttt{/} & Sirve la interfaz HTML. \\
+\hline
+\texttt{/app.js} y \texttt{/styles.css} & Archivos estaticos del frontend. \\
+\hline
+\texttt{/api/status} & Indica si el servidor TCP esta alcanzable. \\
+\hline
+\texttt{/api/state} & Devuelve snapshot completo del sistema. \\
+\hline
+\texttt{/api/metrics} & Expone metricas persistidas. \\
+\hline
+\texttt{/api/events} & Expone eventos combinados de comandos y ACKs. \\
+\hline
+\texttt{/api/scenario} & Ejecuta clientes reales para escenarios de demo. \\
+\hline
+\end{longtable}
+
+\subsection{Escenarios desde la interfaz}
+
+Los botones del dashboard ejecutan clientes reales contra el servidor TCP activo.
+Esto es relevante: la demo no simula datos dentro del navegador, sino que dispara
+el flujo real de red, autenticacion, cifrado, persistencia y lectura posterior.
+
+\subsection{Lectura visual durante la defensa}
+
+Durante la presentacion se recomienda mostrar:
+
+\begin{itemize}
+  \item indicador de servidor TCP online;
+  \item nodo activo y ultima metrica;
+  \item grafico de CPU/RAM/latencia;
+  \item evento de comando emitido;
+  \item ACK recibido;
+  \item recuperacion de la metrica despues de la mitigacion.
+\end{itemize}
+
+\newpage
+\section{Escenarios de demostracion}
+
+\subsection{Escenario CPU alta}
+
+Este es el escenario principal porque permite observar todo el flujo en poco
+tiempo. Se ejecuta \texttt{high-cpu}, el cliente reporta CPU=95, el servidor envia
+\texttt{reduce\_cpu}, el cliente confirma y luego la CPU baja gradualmente.
+
+\begin{lstlisting}[style=terminal]
+python3 -m client.tcp_client --node-id node-02 --mode high-cpu --interval 3.0
+\end{lstlisting}
+
+Resultado esperado:
+
+\begin{enumerate}
+  \item aparece el nodo en el dashboard;
+  \item la serie de CPU sube;
+  \item se registra comando \texttt{reduce\_cpu};
+  \item aparece ACK \texttt{applied};
+  \item la CPU vuelve hacia rango normal.
+\end{enumerate}
+
+\subsection{Escenario multi-nodo}
+
+El escenario multi-nodo levanta varios clientes con modos distintos. Su objetivo
+es demostrar concurrencia y diferenciacion por nodo.
+
+\begin{longtable}{|p{0.22\textwidth}|p{0.28\textwidth}|p{0.34\textwidth}|}
+\hline
+\textbf{Nodo} & \textbf{Modo} & \textbf{Efecto} \\
+\hline
+\texttt{node-01} & \texttt{normal} & Metricas base. \\
+\hline
+\texttt{node-02} & \texttt{high-cpu} & CPU alta. \\
+\hline
+\texttt{node-03} & \texttt{high-ram} & RAM alta. \\
+\hline
+\texttt{node-04} & \texttt{high-latency} & Latencia alta. \\
+\hline
+\texttt{node-05} & \texttt{service-failure} & Servicio en falla. \\
+\hline
+\texttt{node-06} & \texttt{failed-event} & Evento fallido. \\
+\hline
+\texttt{node-07} & \texttt{chaos} & Ciclo de anomalias. \\
+\hline
+\end{longtable}
+
+\subsection{Escenario nodo sin PSK valida}
+
+Para demostrar autenticacion, se puede intentar conectar un nodo no configurado:
+
+\begin{lstlisting}[style=terminal]
+python3 -m client.tcp_client --node-id node-99 --mode normal
+\end{lstlisting}
+
+El resultado esperado es rechazo en el handshake. No se deben persistir metricas
+porque el canal seguro nunca queda establecido.
+
+\newpage
+\section{Pruebas automatizadas}
+
+La suite se ejecuta con:
+
+\begin{lstlisting}[style=terminal]
+python3 -m unittest discover -s tests -v
+\end{lstlisting}
+
+Estado actual verificado: \textbf{63 pruebas automatizadas, todas pasan}.
+
+\subsection{Cobertura por area}
+
+\begin{longtable}{|p{0.25\textwidth}|p{0.55\textwidth}|p{0.12\textwidth}|}
+\hline
+\textbf{Area} & \textbf{Que se verifica} & \textbf{Estado} \\
+\hline
+Cliente & Construccion de metricas, modos anomalos, mitigacion y serializacion. & OK \\
+\hline
+Canal seguro & Handshake PSK, nodo desconocido y \texttt{node-32}. & OK \\
+\hline
+Servidor & Estado de comandos, cooldown, expiracion y confirmaciones. & OK \\
+\hline
+Persistencia & Insercion de metricas, comandos, ACKs y cambio de estado. & OK \\
+\hline
+Dashboard & Endpoints, archivos estaticos, escenarios y estado consolidado. & OK \\
+\hline
+Higiene repo & Ausencia de dependencias o rutas removidas. & OK \\
+\hline
+\end{longtable}
+
+\subsection{Por que importan estas pruebas}
+
+Las pruebas no son solo una formalidad. En este proyecto cubren errores que
+podrian afectar directamente la demo: comandos que quedan eternamente
+\texttt{pending}, dashboard que marca fracaso aunque el cliente genero datos,
+cliente que no se recupera despues de una mitigacion o servidor que acepta datos
+sin autenticacion correcta. La suite reduce el riesgo de que un cambio de ultima
+hora rompa el flujo presentado.
+
+\subsection{Prueba relevante agregada para 32 claves}
+
+Se agrego una prueba que autentica \texttt{node-32}. Esta prueba comprueba que el
+ultimo nodo del rango configurado puede completar el handshake PSK, no solo que
+existe una cadena escrita en documentacion.
+
+\newpage
+\section{Evidencia de red: Wireshark y Nmap}
+
+\subsection{Wireshark o tshark}
+
+La captura debe hacerse filtrando el puerto TCP 5000. Se espera observar primero
+el handshake TCP, luego el handshake PSK y despues frames \texttt{secure}.
+
+\begin{lstlisting}[style=terminal]
+tcp.port == 5000
+\end{lstlisting}
+
+Durante el handshake PSK se pueden ver mensajes JSON como \texttt{hello},
+\texttt{challenge}, \texttt{challenge\_response} y \texttt{ready}. Despues del
+\texttt{ready}, los mensajes reales de aplicacion no deben verse como
+\texttt{metric}, \texttt{command} o \texttt{ack} en claro; deben aparecer como
+campos \texttt{ciphertext} dentro de frames \texttt{secure}.
+
+\begin{longtable}{|p{0.18\textwidth}|p{0.68\textwidth}|}
+\hline
+\textbf{Fase} & \textbf{Evidencia esperada} \\
+\hline
+TCP & Paquetes \texttt{SYN}, \texttt{SYN-ACK}, \texttt{ACK}. \\
+\hline
+PSK & Mensajes \texttt{hello}, \texttt{challenge}, \texttt{challenge\_response}, \texttt{ready}. \\
+\hline
+Canal seguro & Frames con \texttt{seq}, \texttt{nonce}, \texttt{ciphertext}, \texttt{tag}. \\
+\hline
+Reconexion & Nuevo handshake TCP y nuevo handshake PSK. \\
+\hline
+\end{longtable}
+
+\subsection{Nmap}
+
+Nmap permite demostrar que el puerto del servidor esta abierto cuando el servicio
+esta ejecutandose.
+
+\begin{lstlisting}[style=terminal]
+nmap -p 5000 127.0.0.1
+\end{lstlisting}
+
+Resultado esperado:
+
+\begin{lstlisting}[style=terminal]
+5000/tcp open
+\end{lstlisting}
+
+\newpage
+\section{Ejecucion reproducible}
+
+\subsection{Servidor}
+
+\begin{lstlisting}[style=terminal]
+python3 -m server.tcp_server
+\end{lstlisting}
+
+El servidor escucha en \texttt{0.0.0.0:5000} por defecto. Tambien puede cambiarse
+el host o puerto mediante configuracion.
+
+\subsection{Dashboard}
+
+\begin{lstlisting}[style=terminal]
+python3 frontend/dashboard_server.py
+\end{lstlisting}
+
+Luego se abre:
+
+\begin{lstlisting}[style=terminal]
+http://127.0.0.1:8080
+\end{lstlisting}
+
+\subsection{Proyecto completo}
+
+\begin{lstlisting}[style=terminal]
+bash scripts/run_project.sh
+\end{lstlisting}
+
+Este comando levanta servidor y dashboard. Para una demo guiada tambien puede
+usarse:
+
+\begin{lstlisting}[style=terminal]
+make present
+\end{lstlisting}
+
+\subsection{Prueba manual recomendada}
+
+\begin{enumerate}
+  \item Levantar servidor y dashboard.
+  \item Abrir \texttt{http://127.0.0.1:8080}.
+  \item Ejecutar escenario CPU alta.
+  \item Confirmar comando \texttt{reduce\_cpu} y ACK.
+  \item Ver que CPU baja progresivamente.
+  \item Ejecutar escenario multi-nodo.
+  \item Revisar SQLite y captura Wireshark.
+\end{enumerate}
+
+\newpage
+\section{Analisis de confiabilidad}
+
+\subsection{Tolerancia a desconexion}
+
+El cliente esta disenado para reconectarse. Esto significa que una caida temporal
+del servidor no obliga a reiniciar manualmente todos los clientes. En la defensa,
+se puede detener el servidor, observar el mensaje de reconexion del cliente y
+volver a levantar el servicio.
+
+\subsection{Manejo de errores}
+
+El servidor maneja errores comunes: JSON invalido durante handshake, nodo
+desconocido, respuesta HMAC incorrecta, frames fuera de secuencia, mensajes con
+campos faltantes y metricas fuera de rango. La idea es que un cliente defectuoso
+no bote el proceso principal.
+
+\subsection{Persistencia como recuperacion parcial}
+
+SQLite no convierte el sistema en altamente disponible, pero conserva evidencia.
+Si la interfaz se recarga o se reinicia el dashboard, el historial persistido
+permite reconstruir metricas recientes, comandos y ACKs.
+
+\subsection{Riesgos conocidos}
+
+\begin{itemize}
+  \item El servidor sigue siendo un punto central unico.
+  \item Las claves de demo estan en el repositorio.
+  \item El cifrado implementado es academico y no sustituye TLS.
+  \item La ejecucion intensiva de muchos clientes depende de recursos locales.
+  \item Capturas en loopback pueden variar segun sistema operativo.
+\end{itemize}
+
+\newpage
+\section{Limitaciones y trabajo futuro}
+
+\subsection{Limitaciones}
+
+El proyecto cumple su objetivo academico, pero tiene limites claros. El mas
+importante es que el esquema criptografico se implementa con biblioteca estandar
+para evitar dependencias externas. Esto ayuda a la reproducibilidad, pero no debe
+presentarse como una solucion productiva. Tambien existe un solo servidor central
+y las PSK se generan de forma estatica.
+
+\subsection{Trabajo futuro}
+
+\begin{itemize}
+  \item Reemplazar el cifrado de aplicacion por TLS.
+  \item Cargar PSK desde variables de entorno o gestor de secretos.
+  \item Agregar rotacion de claves por nodo.
+  \item Incorporar autenticacion mutua con certificados.
+  \item Agregar alertas por correo, webhook o mensajeria.
+  \item Permitir multiples servidores o replicacion de estado.
+  \item Exportar metricas a Prometheus u otro sistema de observabilidad.
+  \item Mejorar dashboard con filtros historicos y descarga de evidencia.
+\end{itemize}
+
+\subsection{Decision consciente de alcance}
+
+No se implementaron todas estas mejoras porque el objetivo de la entrega es
+mostrar dominio de redes, sockets, protocolo, persistencia y evidencia. Agregar
+demasiadas piezas externas podria hacer el proyecto menos reproducible para la
+evaluacion. La solucion final mantiene un equilibrio entre funcionalidad real y
+claridad pedagogica.
+
+\newpage
+\section{Guion de defensa}
+
+La presentacion debe combinar explicacion y demo. No conviene separar por completo
+la demo del relato tecnico; es mejor explicar cada componente justo cuando se ve
+su efecto.
+
+\begin{enumerate}
+  \item Presentar el problema: monitoreo remoto y reaccion ante anomalias.
+  \item Mostrar arquitectura: clientes, servidor, SQLite y dashboard.
+  \item Explicar protocolo: TCP, PSK, nonce y frames cifrados.
+  \item Levantar dashboard y mostrar servidor online.
+  \item Ejecutar CPU alta y narrar metrica, comando, ACK y recuperacion.
+  \item Mostrar SQLite o eventos persistidos.
+  \item Ejecutar multi-nodo si hay tiempo.
+  \item Mostrar resultado de pruebas automatizadas.
+  \item Mostrar evidencia Wireshark/Nmap.
+  \item Cerrar con limitaciones y mejoras futuras.
+\end{enumerate}
+
+\subsection{Frases tecnicas utiles}
+
+\begin{itemize}
+  \item ``TCP nos da transporte confiable, pero la autenticacion y cifrado se implementan en capa de aplicacion''.
+  \item ``El servidor no acepta metricas antes de validar la PSK del nodo''.
+  \item ``El dashboard no inventa datos: lee estado construido desde SQLite y el servidor''.
+  \item ``El ACK actualiza el estado del comando, por eso no queda eternamente pending''.
+  \item ``La evidencia no es solo visual; tambien queda en pruebas, base de datos y captura de red''.
+\end{itemize}
+
+\newpage
+\section{Entregables}
+
+El repositorio contiene los elementos necesarios para reproducir y defender el
+proyecto.
+
+\begin{longtable}{|p{0.3\textwidth}|p{0.56\textwidth}|}
+\hline
+\textbf{Entregable} & \textbf{Ubicacion o descripcion} \\
+\hline
+Codigo fuente & Directorios \texttt{client/}, \texttt{server/}, \texttt{shared/}, \texttt{storage/}, \texttt{frontend/}. \\
+\hline
+Contrato tecnico & \texttt{docs/contract\_v1.md}. \\
+\hline
+Arquitectura & \texttt{docs/architecture.md}. \\
+\hline
+Escenarios & \texttt{docs/scenarios.md}. \\
+\hline
+Guia de demo & \texttt{docs/demo-flow.md}. \\
+\hline
+Evidencia de red & \texttt{docs/evidence/wireshark.md} y \texttt{docs/evidence/nmap.md}. \\
+\hline
+Pruebas & \texttt{tests/} y comando \texttt{python -m unittest discover -s tests -v}. \\
+\hline
+Informe final & \texttt{docs/informe-final.tex}. \\
+\hline
+\end{longtable}
+
+\subsection{Antes de entregar}
+
+\begin{itemize}
+  \item Completar nombres de integrantes y fecha.
+  \item Insertar capturas reales si el docente las exige dentro del PDF.
+  \item Generar evidencia Wireshark/Nmap en el entorno autorizado.
+  \item Ejecutar nuevamente la suite de pruebas.
+  \item Confirmar que el dashboard funciona en \texttt{127.0.0.1:8080}.
+\end{itemize}
+
+\newpage
+\section{Conclusiones}
+
+El proyecto implementa un sistema completo de monitoreo remoto simulado con
+comunicacion TCP real. La solucion incluye clientes persistentes, servidor
+concurrente, autenticacion PSK con nonce, canal de aplicacion cifrado,
+persistencia SQLite, dashboard en tiempo real y pruebas automatizadas. El flujo
+de anomalia, comando, ACK y recuperacion queda visible en la demo y tambien
+registrado en la base de datos.
+
+Desde el punto de vista de redes, el proyecto permite demostrar varios conceptos:
+conexion TCP, framing de mensajes sobre un stream, manejo de desconexiones,
+protocolos de aplicacion, autenticacion, cifrado de payload, observacion con
+Wireshark y verificacion de puerto con Nmap. Desde el punto de vista de
+ingenieria, muestra separacion de responsabilidades, pruebas de integracion,
+persistencia y documentacion coherente con el comportamiento real.
+
+La principal limitacion es que el cifrado implementado es academico y no reemplaza
+TLS. Aun asi, cumple el objetivo de mostrar como un cliente prueba su identidad
+sin enviar la clave directamente y como los mensajes dejan de viajar en claro
+despues del handshake. Para una version productiva, el siguiente paso natural es
+usar TLS, cargar secretos fuera del repositorio y fortalecer la gestion de nodos.
+
+\newpage
+\section{Referencias}
+
+\begin{itemize}
+  \item RFC 793: Transmission Control Protocol.
+  \item Documentacion oficial de Python: \texttt{socket}, \texttt{threading}, \texttt{sqlite3}, \texttt{http.server}, \texttt{hmac}, \texttt{hashlib}.
+  \item Documentacion del proyecto: \texttt{README.md}, \texttt{docs/contract\_v1.md}, \texttt{docs/architecture.md}, \texttt{docs/scenarios.md}.
+  \item Guia del Proyecto Final de Redes de Computadores 2026.
+\end{itemize}
+
+\appendix
+\newpage
+\section{Anexo A: comandos principales}
+
+\begin{lstlisting}[style=terminal]
+# Ejecutar pruebas
+python3 -m unittest discover -s tests -v
+
+# Levantar servidor
+python3 -m server.tcp_server
+
+# Levantar dashboard
+python3 frontend/dashboard_server.py
+
+# Cliente normal
+python3 -m client.tcp_client --node-id node-01 --mode normal
+
+# Cliente con CPU alta
+python3 -m client.tcp_client --node-id node-02 --mode high-cpu
+
+# Escaneo Nmap
+nmap -p 5000 127.0.0.1
+\end{lstlisting}
+
+\section{Anexo B: checklist de evaluacion}
+
+\begin{longtable}{|p{0.5\textwidth}|p{0.18\textwidth}|p{0.2\textwidth}|}
+\hline
+\textbf{Criterio} & \textbf{Estado} & \textbf{Evidencia} \\
+\hline
+Comunicacion TCP real & Cumplido & Servidor y clientes por socket. \\
+\hline
+Nodos simulados & Cumplido & Modos \texttt{normal}, \texttt{high-cpu}, etc. \\
+\hline
+Autenticacion & Cumplido & PSK + nonce + HMAC. \\
+\hline
+Cifrado & Cumplido & Frames \texttt{secure}. \\
+\hline
+Persistencia & Cumplido & SQLite. \\
+\hline
+Dashboard & Cumplido & Frontend local. \\
+\hline
+Pruebas & Cumplido & 63 tests. \\
+\hline
+Evidencia de red & Documentado & Wireshark/tshark y Nmap. \\
+\hline
+\end{longtable}
+
+\end{document}

@@ -177,7 +177,7 @@ class FakeClientIntegrationTests(unittest.TestCase):
         if os.path.exists(self._db_path):
             os.unlink(self._db_path)
 
-    def test_fake_client_speaks_plain_json_with_token(self) -> None:
+    def test_fake_client_speaks_encrypted_json_with_psk(self) -> None:
         result = subprocess.run(
             [
                 sys.executable,

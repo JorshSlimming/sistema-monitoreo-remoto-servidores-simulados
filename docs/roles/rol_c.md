@@ -35,7 +35,7 @@ shared/config.py
   - latencia mayor o igual a 0.
 - Validar `node_id` no vacio.
 - Validar tipos de mensaje permitidos.
-- Validar token estatico por nodo.
+- Validar autenticacion PSK por nodo y canal seguro.
 - Rechazar mensajes invalidos sin botar el servidor.
 - Detectar anomalias:
   - `cpu > 90`;
@@ -61,4 +61,3 @@ CPU=150 -> rechazado
 Token incorrecto -> rechazado
 Servicio web en falla -> restart_service
 ```
-

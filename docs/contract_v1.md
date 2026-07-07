@@ -1,8 +1,9 @@
 # Contrato Tecnico v1
 
-Este documento define el contrato inicial que deben respetar cliente, servidor, validacion y persistencia.
+Este documento define el contrato que deben respetar cliente, servidor, validacion
+y persistencia.
 
-## Decisiones Base
+## Decisiones base
 
 | Elemento | Decision |
 |---|---|
@@ -11,29 +12,54 @@ Este documento define el contrato inicial que deben respetar cliente, servidor, 
 | Puerto por defecto | 5000 |
 | Host servidor | 0.0.0.0 |
 | Codificacion | UTF-8 |
-| Formato | JSON |
-| Separador de mensajes | Salto de linea `\n` |
-| Tipos de mensaje | `metric`, `command`, `ack`, `error` |
+| Formato de linea | JSON Lines, un objeto JSON terminado en `\n` |
+| Seguridad de sesion | PSK por nodo + desafio con nonce + frames cifrados |
+| Mensajes de aplicacion | `metric`, `command`, `ack`, `error` |
 | Reconexion cliente | Cada 5 segundos |
-| Persistencia | SQLite (implementado, 3 tablas) |
+| Persistencia | SQLite, tablas `metrics`, `commands`, `acks` |
 | Polling frontend | Cada 1 segundo a `/api/state` |
-| Cooldown anti-spam | 12s (servidor, comandos duplicados) |
+| Cooldown anti-spam | 12s para comandos duplicados |
 | Mitigacion cliente | Local, gradual por tipo de anomalia |
 
-## Autenticacion Basica
+## Autenticacion PSK y canal seguro
 
-Cada nodo envia un token estatico definido en `shared/auth.py`. El servidor valida el token
-en cada mensaje `metric` y `ack`. Los tokens por defecto son:
+Cada nodo tiene una clave precompartida definida en `shared/auth.py`. La demo
+incluye 32 PSK listas, desde `node-01` hasta `node-32`, con el patron
+`node-XX-secret`. Al abrir la conexion TCP, el cliente no envia metricas
+inmediatamente: primero realiza un handshake de autenticacion.
 
-| Nodo | Token |
-|---|---|
-| `node-01` | `node-01-secret` |
-| `node-02` | `node-02-secret` |
-| `node-03` | `node-03-secret` |
+Flujo de handshake:
 
-Un token invalido produce respuesta `AUTH_FAILED` sin persistir la metrica.
+```text
+Cliente -> Servidor: {"type":"hello","node_id":"node-01"}
+Servidor -> Cliente: {"type":"challenge","node_id":"node-01","nonce":"..."}
+Cliente -> Servidor: {"type":"challenge_response","client_nonce":"...","proof":"..."}
+Servidor -> Cliente: {"type":"ready","node_id":"node-01"}
+```
 
-## Mensaje Metric
+Si el nodo no existe o la prueba HMAC no coincide, el servidor responde
+`AUTH_FAILED` y cierra la sesion. Si la autenticacion es valida, ambas partes
+derivan una clave de sesion desde la PSK, el nonce del servidor y el nonce del
+cliente. Desde ese punto, los mensajes de aplicacion viajan dentro de frames:
+
+```json
+{
+  "type": "secure",
+  "seq": 0,
+  "nonce": "...",
+  "ciphertext": "...",
+  "tag": "..."
+}
+```
+
+El payload cifrado contiene el mensaje real (`metric`, `command`, `ack` o
+`error`). La implementacion usa biblioteca estandar de Python: HMAC-SHA256 para
+autenticacion/integridad y una secuencia derivada de HMAC para cifrado simetrico
+de demo. Para produccion se recomienda reemplazarlo por TLS o una AEAD auditada.
+
+## Mensaje `metric`
+
+Ejemplo de payload despues de descifrar el frame seguro:
 
 ```json
 {
@@ -54,33 +80,34 @@ Campos:
 | Campo | Tipo | Regla |
 |---|---|---|
 | `type` | string | Debe ser `metric` |
-| `node_id` | string | No vacio |
+| `node_id` | string | Debe coincidir con el nodo autenticado en el canal |
 | `seq` | integer | Mayor o igual a 0 |
 | `cpu` | number | Entre 0 y 100 |
 | `ram` | number | Entre 0 y 100 |
 | `latency_ms` | number | Mayor o igual a 0 |
 | `service_web` | string | `ok` o `falla` |
 | `event_log` | string | Texto descriptivo |
-| `token` | string | Token valido para `node_id` |
-| `mitigation_active` | bool | (opcional) true si hay mitigacion activa tras un comando |
-| `mitigation_type` | string | (opcional) tipo de mitigacion, ej. `reduce_cpu` |
+| `token` | string | Token/PSK valido para compatibilidad interna |
+| `mitigation_active` | bool | Opcional; true si hay mitigacion activa |
+| `mitigation_type` | string | Opcional; ej. `reduce_cpu` |
 
-## Mensaje Command
+## Mensaje `command`
 
 ```json
 {
   "type": "command",
   "command_id": 1,
   "action": "reduce_cpu",
-  "reason": "cpu_above_90"
+  "reason": "cpu above 90"
 }
 ```
 
-El servidor persiste cada comando con un estado:
+Estados persistidos del comando:
 
-- `pending` — emitido, esperando confirmación
-- `confirmed` — ACK recibido del cliente
-- `timed_out` — no se recibió ACK dentro del plazo (60s)
+- `pending`: emitido, esperando confirmacion.
+- `confirmed`: ACK `applied` recibido.
+- `failed`: ACK `failed` recibido.
+- `timed_out`: no se recibio ACK dentro del plazo.
 
 Acciones validas:
 
@@ -90,10 +117,7 @@ Acciones validas:
 - `restart_service`
 - `normalize_node`
 
-El servidor implementa un **cooldown anti-spam** de 12 segundos: si un comando de la misma
-acción para el mismo nodo fue confirmado hace menos de 12s, se rechaza el duplicado.
-
-## Mensaje ACK
+## Mensaje `ack`
 
 ```json
 {
@@ -112,9 +136,7 @@ Estados validos:
 - `applied`
 - `failed`
 
-Campos opcionales de mitigacion incluidos cuando el cliente tiene mitigacion activa:
-
-## Mensaje Error
+## Mensaje `error`
 
 ```json
 {
@@ -124,42 +146,47 @@ Campos opcionales de mitigacion incluidos cuando el cliente tiene mitigacion act
 }
 ```
 
-Codigos iniciales:
+Codigos principales:
 
 - `INVALID_JSON`
 - `INVALID_MESSAGE`
+- `HANDSHAKE_REQUIRED`
 - `AUTH_FAILED`
 - `SERVER_ERROR`
 
-## Reglas de Anomalia
+## Reglas de anomalia
 
-| Condicion | Alerta | Comando |
-|---|---|---|
-| `cpu > 90` | `cpu_high` | `reduce_cpu` |
-| `ram > 90` | `ram_high` | `reduce_ram` |
-| `latency_ms > 200` | `latency_high` | `fix_latency` |
-| `service_web == "falla"` | `service_failure` | `restart_service` |
-| `event_log` contiene `fallido` | `failed_event` | `normalize_node` |
+| Condicion | Comando |
+|---|---|
+| `cpu > 90` | `reduce_cpu` |
+| `ram > 90` | `reduce_ram` |
+| `latency_ms > 200` | `fix_latency` |
+| `service_web == "falla"` | `restart_service` |
+| `event_log` contiene `fallido` | `normalize_node` |
 
-## Flujo Esperado
+## Flujo esperado
 
 ```text
-Cliente -> metric (con mitigation_active true/false) -> Servidor
-Servidor -> command -> Cliente, si hay anomalia (respetando cooldown)
-Cliente -> ack (con mitigation_active/type) -> Servidor
-Cliente -> metric recuperada -> Servidor
+Cliente -> hello
+Servidor -> challenge
+Cliente -> challenge_response
+Servidor -> ready
+Cliente -> secure(metric)
+Servidor -> secure(command), si hay anomalia
+Cliente -> secure(ack)
+Cliente -> secure(metric recuperada)
 ```
 
-## Endpoint de estado (/api/state)
+## Endpoint de estado (`/api/state`)
 
-El dashboard expone `/api/state` como fuente única de verdad, consultado cada 1s.
+El dashboard expone `/api/state` como fuente unica de verdad, consultado cada 1s.
 Responde con un snapshot JSON que incluye:
 
-- Estado del servidor (online/offline, puerto)
-- Nodos activos con última métrica, mitigación y antigüedad
-- Series temporales de métricas
-- Últimos comandos y ACKs
-- Eventos combinados ordenados cronológicamente
-- Últimas líneas de log
+- Estado del servidor TCP.
+- Nodos activos con ultima metrica, mitigacion y antiguedad.
+- Series temporales de metricas.
+- Ultimos comandos y ACKs.
+- Eventos combinados ordenados cronologicamente.
+- Ultimas lineas de log.
 
-Ver `docs/frontend-realtime.md` para la especificación completa del payload.
+Ver `docs/frontend-realtime.md` para la especificacion completa del payload.

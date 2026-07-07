@@ -1,4 +1,4 @@
-"""Repository hygiene checks for the final JSON-lines protocol."""
+"""Repository hygiene checks for the final PSK-secured protocol."""
 
 from pathlib import Path
 import unittest
@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class RepoCleanupTests(unittest.TestCase):
-    def test_no_psk_or_cryptography_references_remain(self) -> None:
+    def test_no_removed_crypto_artifacts_or_local_paths_remain(self) -> None:
         forbidden = (
             "cryptography",
             "auth_handler",

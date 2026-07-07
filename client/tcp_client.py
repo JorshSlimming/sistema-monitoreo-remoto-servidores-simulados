@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shared.auth import get_token
+from shared.secure_channel import SecureProtocolError, SecureSocket, client_handshake
 
 ANOMALY_MODES: dict[str, dict[str, Any]] = {
     "high-cpu": {"cpu": 95.0},
@@ -201,49 +202,39 @@ def decode_message(raw_line: bytes) -> dict[str, Any]:
 
 
 def _drain_socket(
-    sock: socket.socket,
+    secure: SecureSocket,
     node_id: str,
     client_state: ClientState | None = None,
 ) -> None:
     try:
         while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            for raw_line in chunk.split(b"\n"):
-                if not raw_line:
-                    continue
-                try:
-                    message = decode_message(raw_line)
-                except (json.JSONDecodeError, ValueError) as exc:
-                    print(f"[client] decode error: {exc}")
-                    continue
-                msg_type = message.get("type")
-                if msg_type == "command":
-                    action = str(message.get("action", ""))
-                    ack: dict[str, Any] = {
-                        "type": "ack",
-                        "node_id": node_id,
-                        "command_id": message["command_id"],
-                        "status": "applied",
-                        "token": get_token(node_id) or "unknown",
-                        "command": action,
-                        "timestamp": time.time(),
-                        "message": f"ack {action}",
-                    }
-                    if client_state is not None:
-                        before = _apply_command(action, client_state)
-                        ack["before"] = before
-                        ack["after"] = client_state.snapshot()
-                    sock.sendall(encode_message(ack))
-                    print(f"[client] ack sent for command {message['command_id']}: {action or '?'}")
-                elif msg_type == "error":
-                    print(f"[client] server error: {message}")
-                else:
-                    print(f"[client] received: {message}")
+            message = secure.recv_message()
+            msg_type = message.get("type")
+            if msg_type == "command":
+                action = str(message.get("action", ""))
+                ack: dict[str, Any] = {
+                    "type": "ack",
+                    "node_id": node_id,
+                    "command_id": message["command_id"],
+                    "status": "applied",
+                    "token": get_token(node_id) or "unknown",
+                    "command": action,
+                    "timestamp": time.time(),
+                    "message": f"ack {action}",
+                }
+                if client_state is not None:
+                    before = _apply_command(action, client_state)
+                    ack["before"] = before
+                    ack["after"] = client_state.snapshot()
+                secure.send_message(ack)
+                print(f"[client] ack sent for command {message['command_id']}: {action or '?'}")
+            elif msg_type == "error":
+                print(f"[client] server error: {message}")
+            else:
+                print(f"[client] received: {message}")
     except socket.timeout:
         pass
-    except ConnectionResetError:
+    except (ConnectionResetError, EOFError, SecureProtocolError):
         raise
 
 
@@ -256,19 +247,21 @@ def run_client(host: str, port: int, node_id: str, interval: float, mode: str) -
             with socket.create_connection((host, port), timeout=5) as sock:
                 sock.settimeout(1.0)
                 print(f"[client] connected to {host}:{port}")
+                secure = client_handshake(sock, node_id)
+                print(f"[client] secure channel established for {node_id}")
                 while True:
                     _progressive_step(state)
                     metric = build_metric(node_id, seq, mode, state)
-                    sock.sendall(encode_message(metric))
+                    secure.send_message(metric)
                     print(
                         f"[client] sent metric seq={seq} "
                         f"cpu={metric['cpu']} ram={metric['ram']} "
                         f"latency={metric['latency_ms']} service={metric['service_web']}"
                     )
                     seq += 1
-                    _drain_socket(sock, node_id, state)
+                    _drain_socket(secure, node_id, state)
                     time.sleep(interval)
-        except (ConnectionRefusedError, ConnectionResetError, OSError, socket.timeout) as exc:
+        except (ConnectionRefusedError, ConnectionResetError, OSError, socket.timeout, SecureProtocolError) as exc:
             print(f"[client] connection lost ({exc}); reconnecting in 5s...")
             time.sleep(5)
 

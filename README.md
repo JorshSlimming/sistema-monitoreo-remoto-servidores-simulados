@@ -10,14 +10,15 @@ Sistema completo con:
 |---|---|
 | Servidor TCP multicliente (hilos) | Implementado |
 | Cliente persistente con reconexión | Implementado |
-| Autenticación por token estático | Implementado |
+| Autenticación PSK con nonce por nodo | Implementado |
+| Canal cifrado simétrico post-handshake | Implementado |
 | Detección de anomalías y envío de comandos | Implementado |
 | Mitigación del lado cliente | Implementado (cooldown anti-spam) |
 | Enriquecimiento de ACKs (mitigation, command → state linkage) | Implementado |
 | Dashboard web en tiempo real | Implementado (polling `/api/state` cada 1s) |
 | Backend `/api/state` como fuente única de verdad | Implementado |
 | Persistencia SQLite (métricas, comandos, ACKs) | Implementado |
-| Pruebas unitarias y de integración | **60 pruebas — pasan** |
+| Pruebas unitarias y de integración | **63 pruebas — pasan** |
 | Captura de tráfico con Wireshark | Documentado |
 | Escaneo con Nmap | Documentado |
 
@@ -26,8 +27,10 @@ Sistema completo con:
 - **Transporte:** TCP.
 - **Puerto por defecto:** `5000` (configurable).
 - **Codificación:** UTF-8.
-- **Formato:** JSON terminado en `\n` (JSON Lines).
-- **Tipos de mensaje:** `metric`, `command`, `ack`, `error`.
+- **Formato de línea:** JSON terminado en `\n` (JSON Lines).
+- **Handshake:** `hello` -> `challenge` -> `challenge_response` -> `ready`.
+- **Canal seguro:** luego del handshake, los payloads viajan como frames `secure` cifrados y autenticados con clave derivada de la PSK del nodo.
+- **Tipos de mensaje de aplicación:** `metric`, `command`, `ack`, `error`.
 
 Ver `docs/contract_v1.md` para el detalle completo de campos, tipos y reglas de validación.
 
@@ -75,7 +78,7 @@ Ver `docs/contract_v1.md` para el detalle completo de campos, tipos y reglas de 
 configs/         Configuración del servidor (JSON + variables de entorno)
 server/          Servidor TCP, sesiones, estado, despacho de comandos
 client/          Cliente TCP persistente con reconexión automática
-shared/          Autenticación y token validation
+shared/          Autenticación PSK, canal seguro y validación
 storage/         Persistencia SQLite
 frontend/        Dashboard web (servidor HTTP + static HTML/JS/CSS)
 tests/           Pruebas unitarias y de integración
@@ -222,17 +225,19 @@ Ver `docs/mitigation.md` para más detalles.
 
 Ver `docs/frontend-realtime.md` para más detalles.
 
-## Autenticación
+## Autenticación y cifrado
 
-Tokens estáticos definidos en `shared/auth.py`:
+Cada nodo tiene una clave precompartida definida en `shared/auth.py`. La demo deja listas 32 claves, desde `node-01` hasta `node-32`, con el patrón `node-XX-secret`.
 
-| Nodo | Token |
+| Nodo | PSK |
 |---|---|
 | `node-01` | `node-01-secret` |
 | `node-02` | `node-02-secret` |
 | `node-03` | `node-03-secret` |
+| `...` | `...` |
+| `node-32` | `node-32-secret` |
 
-El servidor rechaza métricas o ACKs con token inválido (error `AUTH_FAILED`).
+Al conectarse, el cliente envía su `node_id`, el servidor responde un nonce y el cliente prueba identidad con HMAC. Si la prueba es correcta, ambas partes derivan una clave de sesión y los mensajes `metric`, `command`, `ack` y `error` viajan dentro de frames cifrados. Un nodo desconocido o una prueba inválida produce `AUTH_FAILED`.
 
 ## Persistencia
 

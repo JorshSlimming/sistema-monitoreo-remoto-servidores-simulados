@@ -6,9 +6,8 @@ from typing import Any
 
 
 TOKENS = {
-    "node-01": "node-01-secret",
-    "node-02": "node-02-secret",
-    "node-03": "node-03-secret",
+    f"node-{index:02d}": f"node-{index:02d}-secret"
+    for index in range(1, 33)
 }
 
 

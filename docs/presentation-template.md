@@ -42,8 +42,9 @@ Explicar brevemente:
 
 - **Transporte:** TCP
 - **Puerto:** 5000
-- **Formato:** JSON Lines (`JSON` + `\n`)
-- **Autenticación básica:** token por nodo
+- **Formato de línea:** JSON Lines (`JSON` + `\n`)
+- **Autenticación:** PSK por nodo con nonce
+- **Canal:** mensajes de aplicación dentro de frames `secure` cifrados
 
 | Tipo | Dirección | Propósito |
 |---|---|---|
@@ -56,7 +57,8 @@ Explicar brevemente:
 
 ## Diapositiva 5 — Seguridad y confiabilidad
 
-- Validación de token por `node_id`
+- Handshake PSK por `node_id`
+- Cifrado simétrico e integridad de frames después del handshake
 - Validación de formato y rangos del mensaje
 - Rechazo de JSON inválido
 - Reconexión automática del cliente
@@ -104,7 +106,7 @@ Si hay tiempo, repetir con `Multi-nodo`.
 python3 -m unittest discover -s tests -v
 ```
 
-- **Resultado actual:** 60 pruebas, todas pasan.
+- **Resultado actual:** 63 pruebas, todas pasan.
 - Cobertura: cliente, servidor, persistencia, reglas de anomalía.
 - Insertar captura real de la ejecución.
 
@@ -115,9 +117,9 @@ python3 -m unittest discover -s tests -v
 ### Wireshark / tshark
 
 - Handshake TCP (`SYN`, `SYN-ACK`, `ACK`)
-- Envío de `metric`
-- Envío de `command`
-- Respuesta `ack`
+- Handshake PSK
+- Frames `secure` cifrados
+- Intercambio de `metric`, `command` y `ack`
 
 ### Nmap
 
@@ -139,8 +141,8 @@ Insertar capturas reales del entorno del grupo.
 
 ### Limitaciones
 
-- Tokens estáticos
-- Sin cifrado de transporte
+- PSK estáticas en la demo
+- Cifrado de aplicación, no TLS
 - Un solo servidor central
 
 ### Trabajo futuro

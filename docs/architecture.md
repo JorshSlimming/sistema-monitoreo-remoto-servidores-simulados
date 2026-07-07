@@ -18,6 +18,7 @@ flowchart TB
 
     subgraph Shared["Capa Compartida"]
         AUTH["Auth<br/>shared/auth.py"]
+        SEC["Secure Channel<br/>shared/secure_channel.py"]
     end
 
     subgraph Persistencia["Persistencia"]
@@ -32,12 +33,13 @@ flowchart TB
         BROWSER["Navegador (poll 1s)"]
     end
 
-    N1 -- "TCP / JSON+\\n" --> CM
-    N2 -- "TCP / JSON+\\n" --> CM
-    N3 -- "TCP / JSON+\\n" --> CM
+    N1 -- "TCP / PSK + secure frames" --> CM
+    N2 -- "TCP / PSK + secure frames" --> CM
+    N3 -- "TCP / PSK + secure frames" --> CM
 
     CM -- "acepta conexión" --> CS
-    CS -- "token → validate" --> AUTH
+    CS -- "PSK/token por nodo" --> AUTH
+    CS -- "handshake + cifrado" --> SEC
     CS -- "actualiza estado (cooldown)" --> SS
     CS -- "detecta anomalía" --> CD
     CD -- "command" --> CS
@@ -64,6 +66,7 @@ flowchart TB
     style CD fill:#d5e8d4
     style SC fill:#d5e8d4
     style AUTH fill:#ffe6cc
+    style SEC fill:#ffe6cc
     style DB fill:#e1d5e7
     style SQLITE fill:#e1d5e7
     style DASH fill:#fff2cc
@@ -82,16 +85,20 @@ sequenceDiagram
     participant DB as SQLite
     participant F as Frontend /api/state
 
-    C->>S: {"type":"metric","cpu":95, mitigation_active:true, ...}
-    S->>A: validate_token(node-01, token)
-    A-->>S: válido
+    C->>S: {"type":"hello","node_id":"node-01"}
+    S->>A: busca PSK de node-01
+    A-->>S: PSK valida
+    S->>C: {"type":"challenge","nonce":"..."}
+    C->>S: {"type":"challenge_response","proof":"..."}
+    S->>C: {"type":"ready"}
+    C->>S: secure(metric: cpu=95, mitigation_active=true, ...)
     S->>DB: INSERT metric
-    S->>C: {"type":"command","action":"reduce_cpu"}
+    S->>C: secure(command: reduce_cpu)
     S->>DB: INSERT command
     C->>C: aplica comando y reduce CPU gradualmente
-    C->>S: {"type":"ack","command_id":1,"mitigation_active":true,...}
+    C->>S: secure(ack: command_id=1, applied)
     S->>DB: INSERT ack
-    C->>S: {"type":"metric","cpu":40, mitigation_active:false} (recuperado)
+    C->>S: secure(metric: cpu=40, mitigation_active=false)
     S->>DB: INSERT metric
     F->>DB: SELECT cada 1s
     F-->>F: construye /api/state

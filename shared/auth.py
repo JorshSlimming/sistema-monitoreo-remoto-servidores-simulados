@@ -1,20 +1,20 @@
-"""Minimal token validation for Phase 0."""
+"""Static node secrets used as PSKs for demo authentication."""
 
-# Static demo tokens; use a proper secret store for production auth.
+# Static demo PSKs for node-01..node-32; use a proper secret store for production.
 _VALID_TOKENS: dict[str, str] = {
-    "node-01": "node-01-secret",
-    "node-02": "node-02-secret",
-    "node-03": "node-03-secret",
-    "node-04": "node-04-secret",
-    "node-05": "node-05-secret",
-    "node-06": "node-06-secret",
-    "node-07": "node-07-secret",
+    f"node-{index:02d}": f"node-{index:02d}-secret"
+    for index in range(1, 33)
 }
 
 
 def get_token(node_id: str) -> str | None:
     """Return the valid token for *node_id*, or None if unknown."""
     return _VALID_TOKENS.get(node_id)
+
+
+def get_pre_shared_key(node_id: str) -> str | None:
+    """Return the configured pre-shared key for *node_id*."""
+    return get_token(node_id)
 
 
 def validate_token(node_id: str, token: str) -> bool:

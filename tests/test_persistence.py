@@ -1,6 +1,5 @@
-"""Integration test: real server, real client, verify SQLite persistence."""
+"""Integration test: real server, secure client, verify SQLite persistence."""
 
-import json
 import os
 import socket
 import tempfile
@@ -14,14 +13,11 @@ from server.command_dispatcher import CommandDispatcher
 from server.connection_manager import ConnectionManager
 from storage.store import DatabaseStore
 from shared.auth import get_token
-
-
-def _encode(msg: dict) -> bytes:
-    return (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
+from shared.secure_channel import SecureSocket, client_handshake
 
 
 class PersistenceIntegrationTest(unittest.TestCase):
-    """Starts a real server in a thread, sends a real client interaction,
+    """Starts a real server in a thread, sends a real encrypted interaction,
     and asserts rows are written to the database."""
 
     def setUp(self) -> None:
@@ -33,7 +29,7 @@ class PersistenceIntegrationTest(unittest.TestCase):
         self._dispatcher = CommandDispatcher()
         self._config = ServerConfig(
             host="127.0.0.1",
-            port=0,  # ephemeral — OS assigns
+            port=0,
             db_path=self._db_path,
         )
 
@@ -55,178 +51,124 @@ class PersistenceIntegrationTest(unittest.TestCase):
         if os.path.exists(self._db_path):
             os.unlink(self._db_path)
 
-    # ----------------------------------------------------------------
-    # Tests
-    # ----------------------------------------------------------------
-
     def test_metric_persisted(self) -> None:
-        """Send a normal metric, verify it lands in the metrics table."""
-        sock = self._open_connection()
-        self._send_metric(sock, "node-01", 1, cpu=35.0, ram=45.0)
+        secure = self._open_connection("node-01")
+        self._send_metric(secure, "node-01", 1, cpu=35.0, ram=45.0)
         time.sleep(0.2)
-        sock.close()
-        time.sleep(0.1)
+        secure.sock.close()
 
         self.assertGreaterEqual(self._store._count_metrics(), 1)
 
     def test_command_persisted(self) -> None:
-        """Send a metric that triggers a command, verify the command is persisted."""
-        sock = self._open_connection()
-        self._send_metric(sock, "node-01", 1, cpu=95.0, ram=45.0)
+        secure = self._open_connection("node-01")
+        self._send_metric(secure, "node-01", 1, cpu=95.0, ram=45.0)
         time.sleep(0.3)
         try:
-            sock.recv(4096)
+            secure.recv_message()
         except socket.timeout:
             pass
-        sock.close()
-        time.sleep(0.1)
+        secure.sock.close()
 
         self.assertGreaterEqual(self._store._count_commands(), 1)
 
     def test_ack_persisted(self) -> None:
-        """Send a metric that triggers a command, ack it, verify ack persisted."""
-        sock = self._open_connection()
-        self._send_metric(sock, "node-01", 1, cpu=95.0, ram=45.0)
-
-        time.sleep(0.3)
-        raw = sock.recv(4096)
-        command = None
-        for line in raw.split(b"\n"):
-            if not line:
-                continue
-            msg = json.loads(line.decode("utf-8").strip())
-            if msg.get("type") == "command":
-                command = msg
-                break
-
-        self.assertIsNotNone(command)
-        assert command is not None
+        secure, command = self._send_high_cpu_and_recv_command()
         cid = command["command_id"]
 
-        ack = {
-            "type": "ack",
-            "node_id": "node-01",
-            "command_id": cid,
-            "status": "applied",
-            "token": get_token("node-01") or "unknown",
-        }
-        sock.sendall(_encode(ack))
+        secure.send_message(
+            {
+                "type": "ack",
+                "node_id": "node-01",
+                "command_id": cid,
+                "status": "applied",
+                "token": get_token("node-01") or "unknown",
+            }
+        )
         time.sleep(0.2)
-        sock.close()
-        time.sleep(0.1)
+        secure.sock.close()
 
         self.assertGreaterEqual(self._store._count_acks(), 1)
         self.assertEqual(self._store._command_status(cid), "confirmed")
 
     def test_command_status_updated_on_ack(self) -> None:
-        """After ack, command status transitions to 'confirmed' in the DB."""
-        sock = self._open_connection()
-        self._send_metric(sock, "node-01", 1, cpu=95.0, ram=45.0)
-
-        time.sleep(0.3)
-        raw = sock.recv(4096)
-        command = None
-        for line in raw.split(b"\n"):
-            if not line:
-                continue
-            msg = json.loads(line.decode("utf-8").strip())
-            if msg.get("type") == "command":
-                command = msg
-                break
-
-        self.assertIsNotNone(command)
-        assert command is not None
+        secure, command = self._send_high_cpu_and_recv_command()
         cid = command["command_id"]
 
-        ack = {
-            "type": "ack",
-            "node_id": "node-01",
-            "command_id": cid,
-            "status": "applied",
-            "token": get_token("node-01") or "unknown",
-        }
-        sock.sendall(_encode(ack))
+        secure.send_message(
+            {
+                "type": "ack",
+                "node_id": "node-01",
+                "command_id": cid,
+                "status": "applied",
+                "token": get_token("node-01") or "unknown",
+            }
+        )
         time.sleep(0.2)
 
-        # Verify command status was updated in DB
-        status_rows = []
         with self._store._lock:
-            cursor = self._store._conn.execute(
-                "SELECT status FROM commands WHERE command_id = ?", (cid,)
-            )
-            status_rows = cursor.fetchall()
+            status_rows = self._store._conn.execute(
+                "SELECT status FROM commands WHERE command_id = ?",
+                (cid,),
+            ).fetchall()
         self.assertEqual(len(status_rows), 1)
         self.assertEqual(status_rows[0][0], "confirmed")
 
-        sock.close()
-        time.sleep(0.1)
+        secure.sock.close()
 
     def test_failed_ack_marks_command_failed(self) -> None:
-        """A failed ACK is persisted as failed, not overwritten as confirmed."""
-        sock = self._open_connection()
-        self._send_metric(sock, "node-01", 1, cpu=95.0, ram=45.0)
-
-        time.sleep(0.3)
-        raw = sock.recv(4096)
-        command = None
-        for line in raw.split(b"\n"):
-            if not line:
-                continue
-            msg = json.loads(line.decode("utf-8").strip())
-            if msg.get("type") == "command":
-                command = msg
-                break
-
-        self.assertIsNotNone(command)
-        assert command is not None
+        secure, command = self._send_high_cpu_and_recv_command()
         cid = command["command_id"]
 
-        ack = {
-            "type": "ack",
-            "node_id": "node-01",
-            "command_id": cid,
-            "status": "failed",
-            "token": get_token("node-01") or "unknown",
-        }
-        sock.sendall(_encode(ack))
+        secure.send_message(
+            {
+                "type": "ack",
+                "node_id": "node-01",
+                "command_id": cid,
+                "status": "failed",
+                "token": get_token("node-01") or "unknown",
+            }
+        )
         time.sleep(0.2)
 
         self.assertEqual(self._store._command_status(cid), "failed")
         self.assertEqual(self._state.sent_commands[cid].status, "failed")
 
-        sock.close()
-        time.sleep(0.1)
+        secure.sock.close()
 
-    # ----------------------------------------------------------------
-    # Helpers
-    # ----------------------------------------------------------------
+    def _send_high_cpu_and_recv_command(self) -> tuple[SecureSocket, dict]:
+        secure = self._open_connection("node-01")
+        self._send_metric(secure, "node-01", 1, cpu=95.0, ram=45.0)
+        time.sleep(0.3)
+        command = secure.recv_message()
+        self.assertEqual(command.get("type"), "command")
+        return secure, command
 
-    def _open_connection(self) -> socket.socket:
+    def _open_connection(self, node_id: str) -> SecureSocket:
         sock = socket.create_connection(("127.0.0.1", self._port), timeout=5)
         sock.settimeout(2)
-        return sock
+        return client_handshake(sock, node_id)
 
     def _send_metric(
         self,
-        sock: socket.socket,
+        secure: SecureSocket,
         node_id: str,
         seq: int,
         cpu: float = 35.0,
         ram: float = 45.0,
     ) -> None:
-        token = get_token(node_id) or "unknown"
-        metric = {
-            "type": "metric",
-            "node_id": node_id,
-            "seq": seq,
-            "cpu": cpu,
-            "ram": ram,
-            "latency_ms": 40,
-            "service_web": "ok",
-            "event_log": "normal",
-            "token": token,
-        }
-        sock.sendall(_encode(metric))
+        secure.send_message(
+            {
+                "type": "metric",
+                "node_id": node_id,
+                "seq": seq,
+                "cpu": cpu,
+                "ram": ram,
+                "latency_ms": 40,
+                "service_web": "ok",
+                "event_log": "normal",
+                "token": get_token(node_id) or "unknown",
+            }
+        )
 
 
 if __name__ == "__main__":

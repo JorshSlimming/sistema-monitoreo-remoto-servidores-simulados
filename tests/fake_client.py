@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from shared.auth import get_token
+from shared.secure_channel import SecureProtocolError, SecureSocket, client_handshake
 
 
 def build_metric(node_id: str, seq: int, mode: str) -> dict[str, Any]:
@@ -40,35 +41,25 @@ def build_metric(node_id: str, seq: int, mode: str) -> dict[str, Any]:
     return metric
 
 
-def _drain_socket(sock: socket.socket, node_id: str) -> None:
-    """Read and handle all available messages from the socket (non-blocking via timeout)."""
+def _drain_socket(secure: SecureSocket, node_id: str) -> None:
     try:
         while True:
-            response = sock.recv(4096)
-            if not response:
-                break
-            for raw_line in response.split(b"\n"):
-                if not raw_line:
-                    continue
-                try:
-                    message = decode_message(raw_line)
-                except Exception:
-                    continue
-                print(f"[fake-client] received: {message}")
-                if message.get("type") == "command":
-                    ack = {
-                        "type": "ack",
-                        "node_id": node_id,
-                        "command_id": message["command_id"],
-                        "status": "applied",
-                        "token": get_token(node_id) or "unknown",
-                    }
-                    time.sleep(0.2)
-                    sock.sendall(encode_message(ack))
-                    print(f"[fake-client] ack sent for {message['command_id']}")
+            message = secure.recv_message()
+            print(f"[fake-client] received: {message}")
+            if message.get("type") == "command":
+                ack = {
+                    "type": "ack",
+                    "node_id": node_id,
+                    "command_id": message["command_id"],
+                    "status": "applied",
+                    "token": get_token(node_id) or "unknown",
+                }
+                time.sleep(0.2)
+                secure.send_message(ack)
+                print(f"[fake-client] ack sent for {message['command_id']}")
     except socket.timeout:
         pass
-    except ConnectionResetError:
+    except (ConnectionResetError, EOFError, SecureProtocolError):
         raise
 
 
@@ -87,16 +78,18 @@ def run_client(
             with socket.create_connection((host, port), timeout=5) as sock:
                 sock.settimeout(2)
                 print(f"[fake-client] connected to {host}:{port}")
+                secure = client_handshake(sock, node_id)
+                print(f"[fake-client] secure channel established for {node_id}")
                 while True:
                     seq += 1
                     metric = build_metric(node_id, seq, mode)
                     print(f"[fake-client] sending metric seq={seq} mode={mode}")
-                    sock.sendall(encode_message(metric))
-                    _drain_socket(sock, node_id)
+                    secure.send_message(metric)
+                    _drain_socket(secure, node_id)
                     if max_metrics > 0 and seq >= max_metrics:
                         return
                     time.sleep(interval)
-        except (ConnectionRefusedError, ConnectionResetError, OSError, socket.timeout) as exc:
+        except (ConnectionRefusedError, ConnectionResetError, OSError, socket.timeout, SecureProtocolError) as exc:
             if max_metrics > 0 and seq >= max_metrics:
                 return
             print(f"[fake-client] connection lost ({exc}); reconnecting in 5s...")
@@ -115,7 +108,7 @@ def decode_message(raw_line: bytes) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fake client for Rol A initial base")
+    parser = argparse.ArgumentParser(description="Fake client for integration tests")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--node-id", default="node-01")

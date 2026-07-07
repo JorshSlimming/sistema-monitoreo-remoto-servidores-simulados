@@ -111,21 +111,21 @@ La desconexión de un nodo no afecta a los demás.
 
 ---
 
-## Escenario 8 — Token inválido
+## Escenario 8 — Nodo sin PSK válida
 
-Enviar una métrica con token incorrecto.
+Intentar iniciar una sesión con un nodo que no tiene clave precompartida configurada.
 
 ```bash
 python3 -m client.tcp_client --node-id node-99 --mode normal
 ```
 
-O usando netcat:
+O usando netcat para enviar solo el `hello` inicial:
 
 ```bash
-echo '{"type":"metric","node_id":"node-01","seq":1,"cpu":50,"ram":50,"latency_ms":30,"service_web":"ok","event_log":"normal","token":"wrong"}' | nc -q1 127.0.0.1 5000
+echo '{"type":"hello","node_id":"node-99"}' | nc -q1 127.0.0.1 5000
 ```
 
-**Resultado esperado:** El servidor responde con error `AUTH_FAILED` y **no** persiste la métrica.
+**Resultado esperado:** El servidor responde con error `AUTH_FAILED`, no crea canal seguro y **no** persiste métricas.
 
 ---
 
@@ -174,7 +174,7 @@ make test
 python3 -m unittest discover -s tests -v
 ```
 
-Ejecuta **60 pruebas** que cubren:
+Ejecuta **63 pruebas** que cubren:
 - Construcción de métricas en todos los modos
 - Codificación/decodificación de mensajes
 - Estados del servidor (timeout, confirmación)
@@ -183,7 +183,7 @@ Ejecuta **60 pruebas** que cubren:
 - Persistencia real con SQLite (métrica, comando, ACK)
 - Actualización de estado de comandos al recibir ACK
 - Construcción del payload `/api/state`
-- Autenticación multi-nodo
+- Autenticación PSK multi-nodo y canal cifrado
 
 ## Verificación rápida con API REST
 

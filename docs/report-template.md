@@ -33,7 +33,7 @@ Diseñar e implementar un sistema cliente-servidor que permita monitorear nodos 
 ### 3.3 Objetivos específicos
 
 - Implementar comunicación real sobre TCP entre clientes simulados y un servidor central.
-- Validar mensajes y autenticar nodos mediante token por mensaje.
+- Autenticar nodos con PSK, nonce y canal cifrado simétrico.
 - Persistir métricas, comandos y confirmaciones en una base SQLite.
 - Detectar anomalías y emitir comandos correctivos automáticos.
 - Visualizar el estado del sistema mediante un dashboard local con gráficos en tiempo real.
@@ -67,7 +67,8 @@ Ver `docs/architecture.md` para el diagrama y detalle estructural.
 
 - **Protocolo:** TCP
 - **Puerto por defecto:** `5000`
-- **Formato:** JSON Lines (`JSON` + salto de línea)
+- **Formato de línea:** JSON Lines (`JSON` + salto de línea)
+- **Seguridad:** handshake PSK (`hello`, `challenge`, `challenge_response`, `ready`) y frames `secure` cifrados para los mensajes de aplicación.
 - **Codificación:** UTF-8
 
 ### 6.2 Tipos de mensaje
@@ -82,11 +83,11 @@ Ver `docs/architecture.md` para el diagrama y detalle estructural.
 ### 6.3 Flujo implementado
 
 1. El cliente abre una conexión TCP con el servidor.
-2. El cliente envía un mensaje `metric` con `node_id`, `seq`, métricas y `token`.
-3. El servidor valida autenticación y formato.
-4. Si el mensaje es válido, lo persiste en SQLite.
-5. Si se detecta una anomalía, el servidor emite un `command`.
-6. El cliente procesa el comando y responde con un `ack`.
+2. Cliente y servidor completan el handshake PSK con nonce.
+3. El cliente envía un frame `secure` que contiene `metric`.
+4. El servidor descifra, valida formato y persiste en SQLite.
+5. Si se detecta una anomalía, el servidor emite un `command` cifrado.
+6. El cliente procesa el comando y responde con un `ack` cifrado.
 7. El servidor persiste tanto el comando como la confirmación.
 
 El detalle de campos y ejemplos se encuentra en `docs/contract_v1.md`.
@@ -96,7 +97,8 @@ El detalle de campos y ejemplos se encuentra en `docs/contract_v1.md`.
 ### 7.1 Servidor TCP
 
 - `server/connection_manager.py`: acepta conexiones concurrentes.
-- `server/client_session.py`: procesa mensajes, valida tokens, detecta anomalías y envía comandos.
+- `server/client_session.py`: autentica la sesión, procesa mensajes cifrados, detecta anomalías y envía comandos.
+- `shared/secure_channel.py`: handshake PSK, derivación de clave de sesión, cifrado e integridad de frames.
 - `server/server_state.py`: mantiene nodos conectados, comandos pendientes y expiraciones.
 - `server/command_dispatcher.py`: genera IDs secuenciales de comandos.
 - `server/server_config.py`: carga configuración de host, puerto y base de datos.
@@ -122,7 +124,8 @@ El detalle de campos y ejemplos se encuentra en `docs/contract_v1.md`.
 
 El sistema incorpora varias medidas válidas para la rúbrica del curso:
 
-- autenticación básica cliente-servidor mediante token por nodo;
+- autenticación cliente-servidor mediante PSK y nonce por nodo;
+- cifrado simétrico e integridad de mensajes después del handshake;
 - validación de mensajes y rangos de CPU, RAM y latencia;
 - detección de JSON inválido;
 - reconexión automática del cliente frente a caída del servidor;
@@ -139,7 +142,7 @@ La suite principal se ejecuta con:
 python3 -m unittest discover -s tests -v
 ```
 
-Estado actual verificado en este repositorio: **60 pruebas, todas pasan**.
+Estado actual verificado en este repositorio: **63 pruebas, todas pasan**.
 
 Las pruebas cubren:
 
@@ -162,7 +165,7 @@ El proyecto incluye escenarios reproducibles vía `scripts/run_scenario.sh` y `d
 | Servicio en falla | Emisión de `restart_service` |
 | Evento fallido | Emisión de `normalize_node` |
 | Multi-nodo | Recepción concurrente desde varios clientes |
-| Token inválido | Respuesta `AUTH_FAILED` |
+| Nodo sin PSK válida | Respuesta `AUTH_FAILED` durante el handshake |
 | JSON inválido | Respuesta `INVALID_JSON` |
 | Caída y reconexión | Reintento automático del cliente |
 
@@ -190,9 +193,9 @@ La guía operativa está en `docs/evidence/wireshark.md` y `scripts/capture_traf
 La captura debe mostrar, como mínimo:
 
 - handshake TCP (`SYN`, `SYN-ACK`, `ACK`);
-- envío de `metric` desde el cliente;
-- envío de `command` desde el servidor;
-- respuesta `ack` del cliente.
+- handshake PSK (`hello`, `challenge`, `challenge_response`, `ready`);
+- frames `secure` con payload cifrado;
+- intercambio de `metric`, `command` y `ack` dentro del canal seguro.
 
 Filtro base recomendado:
 
@@ -227,8 +230,8 @@ Antes de la entrega final solo falta completar los datos humanos del grupo, inse
 
 ## 12. Limitaciones del sistema
 
-- autenticación basada en tokens estáticos;
-- comunicación sin cifrado de transporte;
+- claves PSK estáticas en el repositorio de demo;
+- cifrado implementado a nivel de aplicación para la demo, no TLS;
 - un solo servidor central;
 - el análisis Wireshark/tshark puede requerir permisos del sistema operativo;
 - la presentación final y defensa oral siguen dependiendo de preparación humana del grupo.

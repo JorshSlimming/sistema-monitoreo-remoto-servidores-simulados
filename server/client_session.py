@@ -24,8 +24,6 @@ class ClientSession:
         self.dispatcher = dispatcher
         self.node_id: str | None = None
         self._buffer = b""
-        self._pending_commands : set[int]
-        self._pending_commands = set()
 
     def run(self) -> None:
         peer = f"{self.address[0]}:{self.address[1]}"
@@ -99,11 +97,12 @@ class ClientSession:
         node_id = ack.get("node_id")
         if isinstance(node_id, str) and node_id:
             self.node_id = node_id
+
         ack_data = self._extract_ack(ack)
         if not ack_data:
             return
-        cid,status = ack_data
-        self._pending_commands.remove(cid)
+        cid, status = ack_data
+        self.state.confirm_command(cid)
         print(f"[ack] {ack}")
 
     def _extract_metric(self, metric: dict[str,Any]) -> tuple[float,float,float,str,str | None] | None:
@@ -143,7 +142,7 @@ class ClientSession:
         if not isinstance(cid,int):
             self.send_error("INVALID_MESSAGE", "invalid command id")
             return None
-        if not cid in self._pending_commands:
+        if not cid in self.state.sent_commands:
             self.send_error("INVALID_MESSAGE", "repeated ack or ack for nonexistent command")
             return None
         status = ack.get("status")
@@ -154,9 +153,9 @@ class ClientSession:
         return cid,status
 
 
-    def _send_orders(self, cpu:int,ram:int,latency_ms:int,service_web:str,event_log: str | None):
+    def _send_orders(self, cpu:float,ram:float,latency_ms:float,service_web:str,event_log: str | None):
         if cpu > 90 : self.send_command("reduce_cpu","cpu above 90")
-        if ram > 90 : self.send_command("reduce_cpu","ram above 90")
+        if ram > 90 : self.send_command("reduce_ram","ram above 90")
         if latency_ms > 200 : self.send_command("fix_latency", "latency above 200")
         if service_web == "falla" : self.send_command("restart_service", "failing web service, please restart")
 
@@ -167,7 +166,10 @@ class ClientSession:
 
     def send_command(self, action: str, reason: str) -> None:
         command, command_id = self.dispatcher.build_command(action, reason)
-        self._pending_commands.add(command_id)
+        if self.state.is_action_pending(action,self.node_id):
+            print(f"[command] {self.node_id} has {action} action pending, canceled command")
+            return
+        self.state.register_command(command_id, action, self.node_id)
         self._send(command)
         print(f"[command] {self.node_id}: {command}")
 

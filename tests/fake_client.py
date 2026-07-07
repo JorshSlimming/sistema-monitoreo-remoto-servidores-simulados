@@ -40,40 +40,56 @@ def build_metric(node_id: str, seq: int, mode: str) -> dict[str, Any]:
     return metric
 
 
-def run_client(host: str, port: int, node_id: str, mode: str) -> None:
-    with socket.create_connection((host, port), timeout=5) as sock:
-        sock.settimeout(2)
-
-        metric = build_metric(node_id, 1, mode)
-        print(f"[fake-client] sending metric mode={mode}")
-        sock.sendall(encode_message(metric))
-
-        try:
+def _drain_socket(sock: socket.socket, node_id: str) -> None:
+    """Read and handle all available messages from the socket (non-blocking via timeout)."""
+    try:
+        while True:
             response = sock.recv(4096)
-        except (socket.timeout, ConnectionResetError):
-            print("[fake-client] no response received")
-            return
+            if not response:
+                break
+            for raw_line in response.split(b"\n"):
+                if not raw_line:
+                    continue
+                try:
+                    message = decode_message(raw_line)
+                except Exception:
+                    continue
+                print(f"[fake-client] received: {message}")
+                if message.get("type") == "command":
+                    ack = {
+                        "type": "ack",
+                        "node_id": node_id,
+                        "command_id": message["command_id"],
+                        "status": "applied",
+                        "token": get_token(node_id) or "unknown",
+                    }
+                    time.sleep(0.2)
+                    sock.sendall(encode_message(ack))
+                    print(f"[fake-client] ack sent for {message['command_id']}")
+    except socket.timeout:
+        pass
+    except ConnectionResetError:
+        raise
 
-        for raw_line in response.split(b"\n"):
-            if not raw_line:
-                continue
-            try:
-                message = decode_message(raw_line)
-            except Exception:
-                continue
-            
-            print(f"[fake-client] received: {message}")
-            if message.get("type") == "command":
-                ack = {
-                    "type": "ack",
-                    "node_id": node_id,
-                    "command_id": message["command_id"],
-                    "status": "applied",
-                    "token": get_token(node_id) or "unknown",
-                }
-                time.sleep(0.2)
-                sock.sendall(encode_message(ack))
-                print(f"[fake-client] ack sent for {message['command_id']}")
+
+def run_client(host: str, port: int, node_id: str, mode: str, interval: float) -> None:
+    print(f"[fake-client] starting as {node_id} (mode={mode}, interval={interval}s)")
+    seq = 0
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=5) as sock:
+                sock.settimeout(2)
+                print(f"[fake-client] connected to {host}:{port}")
+                while True:
+                    seq += 1
+                    metric = build_metric(node_id, seq, mode)
+                    print(f"[fake-client] sending metric seq={seq} mode={mode}")
+                    sock.sendall(encode_message(metric))
+                    _drain_socket(sock, node_id)
+                    time.sleep(interval)
+        except (ConnectionRefusedError, ConnectionResetError, OSError, socket.timeout) as exc:
+            print(f"[fake-client] connection lost ({exc}); reconnecting in 5s...")
+            time.sleep(5)
 
 
 def encode_message(message: dict[str, Any]) -> bytes:
@@ -92,6 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--node-id", default="node-01")
+    parser.add_argument("--interval", type=float, default=5.0, help="Seconds between metrics")
     parser.add_argument(
         "--mode",
         choices=[
@@ -109,4 +126,4 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    run_client(args.host, args.port, args.node_id, args.mode)
+    run_client(args.host, args.port, args.node_id, args.mode, args.interval)

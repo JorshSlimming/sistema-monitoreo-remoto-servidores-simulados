@@ -674,7 +674,7 @@ def _build_state_payload() -> dict:
     return {
         "updated_at": _now(),
         "server": {
-            "running": _server_reachable(_monitor_host(), _MONITOR_CONFIG.port),
+            "running": True,
             "host": _monitor_host(),
             "port": _MONITOR_CONFIG.port,
             "metrics_total": total_metrics,

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Monitor · Sistema de monitoreo remoto</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#contenido">Saltar al contenido</a>
+
+    <header class="topbar">
+      <div class="topbar__brand">
+        <span class="topbar__mark" aria-hidden="true"></span>
+        <div>
+          <h1>Monitor</h1>
+          <p class="topbar__sub">Sistema de monitoreo remoto · servidores simulados</p>
+        </div>
+      </div>
+      <div class="topbar__actions">
+        <span class="pill pill--ghost" id="global-pill" data-state="loading">
+          <span class="pill__dot" aria-hidden="true"></span>
+          <span class="pill__label">Conectando…</span>
+        </span>
+        <span class="topbar__stamp" id="last-refresh">—</span>
+        <button class="btn btn--ghost" id="refresh" type="button">
+          Actualizar
+        </button>
+        <a class="btn btn--ghost" href="snapshot.html" target="_blank" rel="noopener">
+          Vista reporte
+        </a>
+      </div>
+    </header>
+
+    <main id="contenido" class="layout">
+      <!-- Resumen -->
+      <section class="card" aria-labelledby="resumen-titulo">
+        <header class="card__header">
+          <h2 id="resumen-titulo">Resumen</h2>
+          <p class="card__hint">Estado del servidor y conteos agregados.</p>
+        </header>
+        <div class="stat-grid">
+          <div class="stat">
+            <span class="stat__label">Servidor</span>
+            <span class="stat__value" id="stat-server">—</span>
+            <span class="stat__hint" id="stat-server-hint">Sin datos</span>
+          </div>
+          <div class="stat">
+            <span class="stat__label">Nodos activos</span>
+            <span class="stat__value" id="stat-nodes">—</span>
+            <span class="stat__hint" id="stat-nodes-hint">Sin datos</span>
+          </div>
+          <div class="stat">
+            <span class="stat__label">Métricas recibidas</span>
+            <span class="stat__value" id="stat-metrics">—</span>
+            <span class="stat__hint" id="stat-metrics-hint">Sin datos</span>
+          </div>
+          <div class="stat">
+            <span class="stat__label">Última anomalía</span>
+            <span class="stat__value" id="stat-anomaly">—</span>
+            <span class="stat__hint" id="stat-anomaly-hint">Sin datos</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Métricas por nodo -->
+      <section class="card" aria-labelledby="nodos-titulo">
+        <header class="card__header">
+          <h2 id="nodos-titulo">Métricas por nodo</h2>
+          <p class="card__hint">
+            CPU, RAM y latencia en los últimos ciclos. Sparklines sin librerías,
+            datos del propio cliente.
+          </p>
+        </header>
+        <div class="node-grid" id="node-grid"></div>
+        <p class="empty" id="nodes-empty" hidden>
+          Aún no hay métricas. Inicia el servidor y al menos un cliente para
+          empezar a ver datos.
+        </p>
+      </section>
+
+      <!-- Eventos recientes -->
+      <section class="card" aria-labelledby="eventos-titulo">
+        <header class="card__header">
+          <h2 id="eventos-titulo">Eventos recientes</h2>
+          <p class="card__hint">
+            Comandos emitidos, acks recibidos y anomalías detectadas.
+          </p>
+        </header>
+        <ol class="event-list" id="event-list" aria-live="polite"></ol>
+        <p class="empty" id="events-empty" hidden>
+          Sin eventos recientes.
+        </p>
+      </section>
+
+      <!-- Logs -->
+      <section class="card" aria-labelledby="logs-titulo">
+        <header class="card__header">
+          <h2 id="logs-titulo">Logs</h2>
+          <p class="card__hint">Últimas líneas del sistema. Niveles coloreados.</p>
+        </header>
+        <pre class="log-tail" id="log-tail" aria-live="polite"></pre>
+        <p class="empty" id="logs-empty" hidden>Sin logs.</p>
+      </section>
+    </main>
+
+    <footer class="footbar">
+      <span>Monitor local · sin autenticación · auto-actualiza cada 5 s</span>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

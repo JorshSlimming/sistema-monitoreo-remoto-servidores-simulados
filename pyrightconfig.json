@@ -1,0 +1,9 @@
+{
+  "include": ["client", "server", "shared", "storage", "tests"],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": ["."]
+    }
+  ]
+}

@@ -9,7 +9,10 @@ env/
 .env
 logs/
 data/
+artifacts/
+captures/
 *.db
 *.sqlite
 *.sqlite3
-
+.slim/deepwork/
+.slim/session/

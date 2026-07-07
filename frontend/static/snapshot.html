@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reporte · Sistema de monitoreo remoto</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .snapshot-page {
+        background: var(--bg);
+        min-height: 100vh;
+      }
+    </style>
+  </head>
+  <body class="snapshot-page">
+    <main class="snapshot" id="snapshot-root">
+      <header class="snapshot__head">
+        <span class="snapshot__eyebrow">Sistema de monitoreo remoto</span>
+        <h1 class="snapshot__title">Estado del sistema</h1>
+        <div class="snapshot__meta" id="snap-meta">
+          <span>Cargando…</span>
+        </div>
+      </header>
+
+      <section class="snapshot__section" aria-labelledby="snap-overview-title">
+        <h2 class="snapshot__section-title" id="snap-overview-title">Resumen</h2>
+        <div class="snapshot__grid">
+          <article class="snapshot__tile">
+            <span class="snapshot__label">Servidor</span>
+            <span class="snapshot__value" id="snap-server">—</span>
+            <span class="snapshot__hint" id="snap-server-hint">—</span>
+          </article>
+          <article class="snapshot__tile">
+            <span class="snapshot__label">Nodos activos</span>
+            <span class="snapshot__value" id="snap-nodes">—</span>
+            <span class="snapshot__hint" id="snap-nodes-hint">—</span>
+          </article>
+          <article class="snapshot__tile">
+            <span class="snapshot__label">Métricas recibidas</span>
+            <span class="snapshot__value" id="snap-metrics">—</span>
+            <span class="snapshot__hint" id="snap-metrics-hint">—</span>
+          </article>
+          <article class="snapshot__tile">
+            <span class="snapshot__label">Última anomalía</span>
+            <span class="snapshot__value" id="snap-anomaly">—</span>
+            <span class="snapshot__hint" id="snap-anomaly-hint">—</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="snapshot__section" aria-labelledby="snap-nodes-title">
+        <h2 class="snapshot__section-title" id="snap-nodes-title">Métricas por nodo</h2>
+        <table class="snapshot__table" id="snap-nodes-table">
+          <thead>
+            <tr>
+              <th>Nodo</th>
+              <th>CPU</th>
+              <th>RAM</th>
+              <th>Latencia</th>
+              <th>Servicio web</th>
+              <th>Última métrica</th>
+            </tr>
+          </thead>
+          <tbody id="snap-nodes-body">
+            <tr>
+              <td colspan="6" style="text-align:center; color: var(--text-faint)">
+                Cargando…
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="snapshot__section" aria-labelledby="snap-events-title">
+        <h2 class="snapshot__section-title" id="snap-events-title">Eventos recientes</h2>
+        <table class="snapshot__table">
+          <thead>
+            <tr>
+              <th>Hora</th>
+              <th>Tipo</th>
+              <th>Nodo</th>
+              <th>Detalle</th>
+            </tr>
+          </thead>
+          <tbody id="snap-events-body">
+            <tr>
+              <td colspan="4" style="text-align:center; color: var(--text-faint)">
+                Cargando…
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <footer class="snapshot__foot">
+        <span>Origen: <code>/api/status</code> · <code>/api/metrics</code> · <code>/api/events</code></span>
+        <span id="snap-host">Reporte local</span>
+      </footer>
+    </main>
+
+    <script>
+      (() => {
+        "use strict";
+        const $ = (s) => document.querySelector(s);
+        const $id = (s) => document.getElementById(s);
+
+        const setText = (id, v) => {
+          const el = $id(id);
+          if (el) el.textContent = v;
+        };
+
+        const formatTime = (iso) => {
+          if (!iso) return "—";
+          const d = new Date(iso);
+          if (Number.isNaN(d.getTime())) return iso;
+          return d.toLocaleTimeString("es-CO", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+        };
+
+        const formatDateTime = (iso) => {
+          if (!iso) return "—";
+          const d = new Date(iso);
+          if (Number.isNaN(d.getTime())) return iso;
+          return d.toLocaleString("es-CO", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+        };
+
+        const escape = (s) =>
+          String(s ?? "").replace(/[&<>"']/g, (c) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          }[c]));
+
+        const numOr = (v, fb) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : fb;
+        };
+
+        const pick = (obj, names) => {
+          if (!obj || typeof obj !== "object") return undefined;
+          for (const n of names) {
+            if (obj[n] !== undefined && obj[n] !== null) return obj[n];
+          }
+          return undefined;
+        };
+
+        async function fetchJson(url) {
+          let res;
+          try {
+            res = await fetch(url, { headers: { Accept: "application/json" } });
+          } catch {
+            return null;
+          }
+          const text = await res.text();
+          if (!res.ok) return null;
+          try {
+            return JSON.parse(text) || {};
+          } catch {
+            return null;
+          }
+        }
+
+        function renderOverview(status) {
+          if (!status) {
+            setText("snap-server", "—");
+            setText("snap-server-hint", "Sin datos");
+            return;
+          }
+          const srv = status.server || {};
+          if (srv.host || srv.port !== undefined) {
+            setText("snap-server", `${srv.host || "0.0.0.0"}:${srv.port ?? "?"}`);
+            setText("snap-server-hint", srv.running === false ? "Detenido" : "Activo");
+          } else {
+            setText("snap-server", "—");
+            setText("snap-server-hint", "Sin datos del servidor");
+          }
+
+          const active = pick(status, ["nodes_active", "active_nodes", "clients"]);
+          if (active !== undefined) {
+            setText("snap-nodes", String(active));
+            setText("snap-nodes-hint", "vistos en los últimos ciclos");
+          } else {
+            setText("snap-nodes", "—");
+            setText("snap-nodes-hint", "Sin datos");
+          }
+
+          const total = pick(status, [
+            "metrics_total",
+            "metrics_received",
+            "total_metrics",
+          ]);
+          if (total !== undefined) {
+            setText("snap-metrics", String(total));
+            setText("snap-metrics-hint", "totales recibidas");
+          } else {
+            setText("snap-metrics", "—");
+            setText("snap-metrics-hint", "Sin datos");
+          }
+
+          const lastA = pick(status, ["last_anomaly", "last_anomaly_at"]);
+          if (lastA) {
+            setText("snap-anomaly", formatDateTime(lastA));
+            setText("snap-anomaly-hint", "registrada");
+          } else {
+            setText("snap-anomaly", "—");
+            setText("snap-anomaly-hint", "Sin anomalías registradas");
+          }
+        }
+
+        function renderNodes(metrics) {
+          const body = $id("snap-nodes-body");
+          if (!body) return;
+          let list = [];
+          if (metrics) {
+            if (Array.isArray(metrics.metrics)) list = metrics.metrics;
+            else if (Array.isArray(metrics.data)) list = metrics.data;
+            else if (Array.isArray(metrics.items)) list = metrics.items;
+            else if (Array.isArray(metrics)) list = metrics;
+          }
+          if (list.length === 0) {
+            body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-faint)">Sin métricas recientes</td></tr>`;
+            return;
+          }
+          // Take the latest per node
+          const byNode = new Map();
+          for (const raw of list) {
+            if (!raw || typeof raw !== "object") continue;
+            const id =
+              pick(raw, ["node_id", "node", "id", "name"]) || "desconocido";
+            const ts =
+              pick(raw, ["timestamp", "ts", "time"]) || "";
+            const cur = byNode.get(id);
+            if (!cur || (ts && (!cur._ts || ts > cur._ts))) {
+              byNode.set(id, {
+                node_id: id,
+                cpu: numOr(pick(raw, ["cpu", "cpu_pct"]), null),
+                ram: numOr(pick(raw, ["ram", "mem", "memory"]), null),
+                lat: numOr(
+                  pick(raw, ["latency_ms", "latency", "lat"]),
+                  null
+                ),
+                svc:
+                  pick(raw, ["service_web", "service"]) || "",
+                ts,
+                _ts: ts,
+              });
+            }
+          }
+          const rows = Array.from(byNode.values())
+            .sort((a, b) => a.node_id.localeCompare(b.node_id))
+            .map((n) => {
+              const fmtPct = (v) => (v == null ? "—" : `${v.toFixed(0)}%`);
+              const fmtMs = (v) => (v == null ? "—" : `${Math.round(v)} ms`);
+              return `<tr>
+  <td>${escape(n.node_id)}</td>
+  <td>${fmtPct(n.cpu)}</td>
+  <td>${fmtPct(n.ram)}</td>
+  <td>${fmtMs(n.lat)}</td>
+  <td>${escape(n.svc || "—")}</td>
+  <td>${formatTime(n.ts)}</td>
+</tr>`;
+            });
+          body.innerHTML = rows.join("");
+        }
+
+        function renderEvents(events) {
+          const body = $id("snap-events-body");
+          if (!body) return;
+          let list = [];
+          if (events) {
+            if (Array.isArray(events.events)) list = events.events;
+            else if (Array.isArray(events.items)) list = events.items;
+            else if (Array.isArray(events.data)) list = events.data;
+            else if (Array.isArray(events)) list = events;
+          }
+          if (list.length === 0) {
+            body.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-faint)">Sin eventos recientes</td></tr>`;
+            return;
+          }
+          const rows = list.slice(0, 15).map((e) => {
+            const type = (pick(e, ["type", "kind", "event_type"]) || "event")
+              .toString()
+              .toLowerCase();
+            const node = pick(e, ["node_id", "node", "from"]) || "—";
+            const ts = pick(e, ["timestamp", "ts", "time"]) || null;
+            const action = pick(e, ["action", "command", "cmd"]);
+            const reason = pick(e, ["reason"]);
+            const status = pick(e, ["status", "result"]);
+            const msg = pick(e, ["message", "detail", "summary", "metric"]);
+            let detail = "";
+            if (action) detail += escape(action);
+            if (reason) detail += (detail ? " (" : "") + escape(reason) + (detail ? ")" : "");
+            if (!detail && status) detail = escape(status);
+            if (!detail && msg) detail = escape(msg);
+            return `<tr>
+  <td>${formatTime(ts)}</td>
+  <td>${escape(type)}</td>
+  <td>${escape(node)}</td>
+  <td>${detail || "—"}</td>
+</tr>`;
+          });
+          body.innerHTML = rows.join("");
+        }
+
+        async function load() {
+          const meta = $id("snap-meta");
+          const now = new Date();
+          const [status, metrics, events] = await Promise.all([
+            fetchJson("/api/status"),
+            fetchJson("/api/metrics"),
+            fetchJson("/api/events"),
+          ]);
+
+          // Meta line
+          const srv = (status && status.server) || {};
+          const host = srv.host || "localhost";
+          const port = srv.port ?? "?";
+          meta.innerHTML = `Generado: <strong>${formatDateTime(now.toISOString())}</strong> · Servidor: <strong>${escape(host)}:${escape(port)}</strong>`;
+          setText("snap-host", `Reporte local · ${escape(host)}:${escape(port)}`);
+
+          renderOverview(status);
+          renderNodes(metrics);
+          renderEvents(events);
+        }
+
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", load);
+        } else {
+          load();
+        }
+        setTimeout(load, 3000);
+      })();
+    </script>
+  </body>
+</html>

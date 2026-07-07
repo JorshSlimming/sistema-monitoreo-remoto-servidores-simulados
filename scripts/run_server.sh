@@ -1,3 +1,2 @@
 #!/usr/bin/env bash
-python -m server.tcp_server
-
+python3 -m server.tcp_server

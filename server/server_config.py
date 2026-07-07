@@ -11,6 +11,7 @@ class ServerConfig:
     encoding: str = "utf-8"
     message_separator: str = "\n"
     max_line_bytes: int = 8192
+    db_path: str = "data/monitor.db"
 
 
 def load_server_config(path: str | Path | None = None) -> ServerConfig:
@@ -29,4 +30,5 @@ def load_server_config(path: str | Path | None = None) -> ServerConfig:
         encoding=data.get("encoding", "utf-8"),
         message_separator=data.get("message_separator", "\n"),
         max_line_bytes=int(data.get("max_line_bytes", 8192)),
+        db_path=data.get("db_path", ServerConfig.db_path),
     )

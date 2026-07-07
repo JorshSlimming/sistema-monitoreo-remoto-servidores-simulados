@@ -1,0 +1,96 @@
+# Diagrama de arquitectura
+
+```mermaid
+flowchart TB
+    subgraph Clientes["Clientes TCP"]
+        N1["node-01<br/>client/tcp_client.py"]
+        N2["node-02<br/>client/tcp_client.py"]
+        N3["node-03<br/>client/tcp_client.py"]
+    end
+
+    subgraph Servidor["Servidor Central"]
+        CM["ConnectionManager<br/>server/connection_manager.py"]
+        CS["ClientSession (por hilo)<br/>server/client_session.py"]
+        SS["ServerState<br/>server/server_state.py"]
+        CD["CommandDispatcher<br/>server/command_dispatcher.py"]
+        SC["ServerConfig<br/>server/server_config.py"]
+    end
+
+    subgraph Shared["Capa Compartida"]
+        AUTH["Auth<br/>shared/auth.py"]
+    end
+
+    subgraph Persistencia["Persistencia"]
+        DB["DatabaseStore<br/>storage/store.py"]
+        SQLITE[("SQLite<br/>data/monitor.db")]
+    end
+
+    N1 -- "TCP / JSON+\\n" --> CM
+    N2 -- "TCP / JSON+\\n" --> CM
+    N3 -- "TCP / JSON+\\n" --> CM
+
+    CM -- "acepta conexión" --> CS
+    CS -- "token → validate" --> AUTH
+    CS -- "actualiza estado" --> SS
+    CS -- "detecta anomalía" --> CD
+    CD -- "command" --> CS
+    CS -- "persiste métrica" --> DB
+    CS -- "persiste comando" --> DB
+    CS -- "persiste ACK" --> DB
+    DB --> SQLITE
+    CS -- "metric normal?" --> N1
+    CS -- "command (reduce_cpu)" --> N1
+    N1 -- "ack" --> CS
+
+    style N1 fill:#d4f1f9
+    style N2 fill:#d4f1f9
+    style N3 fill:#d4f1f9
+    style CM fill:#d5e8d4
+    style CS fill:#d5e8d4
+    style SS fill:#d5e8d4
+    style CD fill:#d5e8d4
+    style SC fill:#d5e8d4
+    style AUTH fill:#ffe6cc
+    style DB fill:#e1d5e7
+    style SQLITE fill:#e1d5e7
+```
+
+## Flujo de mensajes
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente (node-01)
+    participant S as Servidor
+    participant A as Auth
+    participant DB as SQLite
+
+    C->>S: {"type":"metric","cpu":95,...}
+    S->>A: validate_token(node-01, token)
+    A-->>S: válido
+    S->>DB: INSERT metric
+    S->>C: {"type":"command","action":"reduce_cpu"}
+    S->>DB: INSERT command
+    C->>S: {"type":"ack","command_id":1,"status":"applied"}
+    S->>DB: INSERT ack
+    C->>S: {"type":"metric","cpu":40,...}  (recuperado)
+    S->>DB: INSERT metric
+```
+
+## Flujo de reconexión
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant S as Servidor
+
+    C->>S: TCP connect
+    S-->>C: SYN-ACK
+    C->>S: metric
+    Note over C,S: conexión activa
+    S--xS: servidor cae
+    C->>C: detecta ConnectionRefusedError
+    C->>C: espera 5s
+    C->>S: TCP reconnect
+    S-->>C: SYN-ACK
+    C->>S: metric (seq continúa)
+```

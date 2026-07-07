@@ -58,7 +58,7 @@ Campos:
 ```json
 {
   "type": "command",
-  "command_id": "cmd-000001",
+  "command_id": 1,
   "action": "reduce_cpu",
   "reason": "cpu_above_90"
 }
@@ -78,7 +78,7 @@ Acciones validas iniciales:
 {
   "type": "ack",
   "node_id": "node-01",
-  "command_id": "cmd-000001",
+  "command_id": 1,
   "status": "applied",
   "token": "node-01-secret"
 }

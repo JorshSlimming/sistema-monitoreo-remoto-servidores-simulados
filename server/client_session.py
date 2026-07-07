@@ -1,5 +1,4 @@
 import json
-from numbers import Number
 import socket
 from typing import Any
 
@@ -14,6 +13,8 @@ from server.auth_handler import (
     load_psk_config,
     get_node_psk,
 )
+from shared.auth import validate_token
+from storage.store import DatabaseStore
 
 
 class ClientSession:
@@ -24,12 +25,14 @@ class ClientSession:
         config: ServerConfig,
         state: ServerState,
         dispatcher: CommandDispatcher,
+        store: DatabaseStore | None = None,
     ) -> None:
         self.conn = conn
         self.address = address
         self.config = config
         self.state = state
         self.dispatcher = dispatcher
+        self.store = store
         self.node_id: str | None = None
         self._buffer = b""
         self.authenticated = False
@@ -205,15 +208,20 @@ class ClientSession:
             print(f"[server] received message type={message_type!r}: {message}")
 
     def _handle_metric(self, metric: dict[str, Any]) -> None:
+        # Token check
+        token = metric.get("token")
         node_id = metric.get("node_id")
         if isinstance(node_id, str) and node_id:
+            if not isinstance(token, str) or not validate_token(node_id, token):
+                self.send_error("AUTH_FAILED", f"invalid token for node {node_id}")
+                return
             self.node_id = node_id
         else:
             self.node_id = f"unknown-{self.address[0]}:{self.address[1]}"
 
         peer = f"{self.address[0]}:{self.address[1]}"
-        seq = metric.get("seq") if isinstance(metric.get("seq"), int) and metric.get("seq",-1) > 0 else self.send_error("INVALID_MESSAGE", "sequence number must be a positive integer") 
-        if not seq:
+        seq = metric.get("seq") if isinstance(metric.get("seq"), int) and metric.get("seq",-1) >= 0 else self.send_error("INVALID_MESSAGE", "sequence number must be a non-negative integer") 
+        if seq is None:
             return
         self.state.mark_connected(self.node_id, peer, seq)
         self.state.mark_seen(self.node_id, seq)
@@ -221,12 +229,18 @@ class ClientSession:
         if not (metrics := self._extract_metric(metric)):
             return
         cpu,ram,latency_ms,service_web,event_log = metrics
+        if self.store is not None and self.node_id is not None:
+            self.store.save_metric(self.node_id, seq, cpu, ram, latency_ms, service_web, event_log)
         self._send_orders(cpu,ram,latency_ms,service_web,event_log)
         print(f"[metric] {self.node_id}: {metric}")
 
     def _handle_ack(self, ack: dict[str, Any]) -> None:
         node_id = ack.get("node_id")
         if isinstance(node_id, str) and node_id:
+            token = ack.get("token")
+            if not isinstance(token, str) or not validate_token(node_id, token):
+                self.send_error("AUTH_FAILED", f"invalid token for node {node_id}")
+                return
             self.node_id = node_id
 
         ack_data = self._extract_ack(ack)
@@ -234,6 +248,8 @@ class ClientSession:
             return
         cid, status = ack_data
         self.state.confirm_command(cid)
+        if self.store is not None and self.node_id is not None:
+            self.store.save_ack(cid, self.node_id, status)
         print(f"[ack] {ack}")
 
     def _extract_metric(self, metric: dict[str,Any]) -> tuple[float,float,float,str,str | None] | None:
@@ -289,6 +305,7 @@ class ClientSession:
         if ram > 90 : self.send_command("reduce_ram","ram above 90")
         if latency_ms > 200 : self.send_command("fix_latency", "latency above 200")
         if service_web == "falla" : self.send_command("restart_service", "failing web service, please restart")
+        if event_log and "fallido" in event_log : self.send_command("normalize_node", "failed event detected, please normalize")
 
     def send_error(self,code,message):
         error = {"type": "error", "code": code, "message": message}
@@ -296,11 +313,15 @@ class ClientSession:
         print(f"[error] {self.node_id}: {error}")
 
     def send_command(self, action: str, reason: str) -> None:
+        if self.node_id is None:
+            return
         command, command_id = self.dispatcher.build_command(action, reason)
-        if self.state.is_action_pending(action,self.node_id):
+        if self.state.is_action_pending(action, self.node_id):
             print(f"[command] {self.node_id} has {action} action pending, canceled command")
             return
         self.state.register_command(command_id, action, self.node_id)
+        if self.store is not None and self.node_id is not None:
+            self.store.save_command(command_id, action, reason, self.node_id)
         self._send(command)
         print(f"[command] {self.node_id}: {command}")
 

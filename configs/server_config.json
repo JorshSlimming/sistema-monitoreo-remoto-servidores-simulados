@@ -3,5 +3,6 @@
   "port": 5000,
   "encoding": "utf-8",
   "message_separator": "\n",
-  "max_line_bytes": 8192
+  "max_line_bytes": 8192,
+  "db_path": "data/monitor.db"
 }

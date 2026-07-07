@@ -89,6 +89,54 @@ class DashboardIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(details["db_stats"]["commands"], 1)
         self.assertGreaterEqual(details["db_stats"]["acks"], 1)
 
+    def test_multi_node_scenario_populates_all_demo_nodes(self) -> None:
+        status, _headers, body = self._post(
+            "/api/scenario",
+            {"scenario": "multi-node", "node_id": "node-01", "interval": 1.0},
+        )
+
+        self.assertEqual(status, 200)
+        artifact = json.loads(body.decode("utf-8"))
+        self.assertTrue(artifact["details"]["success"], artifact)
+
+        state_status, _state_headers, state_body = self._get("/api/state")
+        self.assertEqual(state_status, 200)
+        state = json.loads(state_body.decode("utf-8"))
+
+        self.assertEqual(
+            set(state["server"]["active_nodes"]),
+            {f"node-0{i}" for i in range(1, 8)},
+        )
+
+    def test_multi_node_skips_already_active_nodes(self) -> None:
+        """multi-node only starts demo node IDs that are not yet present."""
+        # Seed recent metrics for node-01..03 so they appear active.
+        for i in range(1, 4):
+            nid = f"node-0{i}"
+            self._store.save_metric(node_id=nid, seq=0, cpu=35.0, ram=45.0,
+                                    latency_ms=40, service_web="ok",
+                                    event_log="normal", scenario="normal")
+
+        # Call multi-node — should only launch node-04..07.
+        status, _headers, body = self._post(
+            "/api/scenario",
+            {"scenario": "multi-node", "node_id": "node-01", "interval": 1.0},
+        )
+
+        self.assertEqual(status, 200)
+        artifact = json.loads(body.decode("utf-8"))
+        self.assertTrue(artifact["details"]["success"], artifact)
+
+        state_status, _state_headers, state_body = self._get("/api/state")
+        self.assertEqual(state_status, 200)
+        state = json.loads(state_body.decode("utf-8"))
+        active = set(state["server"]["active_nodes"])
+        self.assertEqual(
+            active,
+            {f"node-0{i}" for i in range(1, 8)},
+            f"Expected all 7 demo nodes, got {active}",
+        )
+
     def _get(self, path: str) -> tuple[int, dict[str, str], bytes]:
         with urllib.request.urlopen(self._dashboard_url + path, timeout=10) as response:
             return response.status, dict(response.headers), response.read()

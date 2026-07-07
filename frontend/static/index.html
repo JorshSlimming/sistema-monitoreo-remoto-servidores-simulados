@@ -19,7 +19,7 @@
       <div class="mission__brand">
         <span class="mission__mark" aria-hidden="true"></span>
         <div class="mission__title">
-          <span class="mission__eyebrow">monitor</span>
+          <span class="mission__eyebrow">monitor · sala de control</span>
           <h1>Sistema de monitoreo remoto</h1>
         </div>
       </div>
@@ -46,16 +46,46 @@
     </header>
 
     <main id="contenido" class="layout">
-      <!-- Guía rápida: cadena causal detección → comando → ACK → recuperación -->
+      <!-- KPIs: arriba, dominantes -->
+      <section class="kpi-strip" aria-label="Indicadores clave">
+        <div class="kpi" data-tone="info">
+          <span class="kpi__label">Métricas</span>
+          <span class="kpi__value" id="kpi-metrics">—</span>
+          <span class="kpi__hint" id="kpi-metrics-hint">totales recibidas</span>
+        </div>
+        <div class="kpi" data-tone="info">
+          <span class="kpi__label">Comandos</span>
+          <span class="kpi__value" id="kpi-commands">—</span>
+          <span class="kpi__hint" id="kpi-commands-hint">emitidos</span>
+        </div>
+        <div class="kpi" data-tone="success">
+          <span class="kpi__label">ACKs</span>
+          <span class="kpi__value" id="kpi-acks">—</span>
+          <span class="kpi__hint" id="kpi-acks-hint">recibidos</span>
+        </div>
+        <div class="kpi" data-tone="idle">
+          <span class="kpi__label">Nodos activos</span>
+          <span class="kpi__value" id="kpi-nodes">—</span>
+          <span class="kpi__hint" id="kpi-nodes-hint">últimos ciclos</span>
+        </div>
+        <div class="kpi" id="kpi-anomaly-card" data-tone="idle">
+          <span class="kpi__label">Anomalía</span>
+          <span class="kpi__value" id="kpi-anomaly">—</span>
+          <span class="kpi__hint" id="kpi-anomaly-hint">sin anomalías activas</span>
+        </div>
+        <div class="kpi" data-tone="info">
+          <span class="kpi__label">Escenario</span>
+          <span class="kpi__value" id="kpi-scenario">—</span>
+          <span class="kpi__hint" id="kpi-scenario-hint">sin escenario activo</span>
+        </div>
+      </section>
+
+      <!-- Cadena causal compacta (Detección → Comando → ACK → Recuperación) -->
       <section class="howto" aria-labelledby="howto-titulo">
         <header class="howto__head">
           <div>
-            <span class="howto__eyebrow">guía rápida</span>
-            <h2 id="howto-titulo">Cómo leer este panel</h2>
-            <p class="howto__lede">
-              El sistema sigue cuatro pasos en vivo. Mira cómo se enciende cada
-              eslabón al disparar un escenario arriba.
-            </p>
+            <span class="howto__eyebrow">flujo del sistema</span>
+            <h2 id="howto-titulo">Detección → Comando → ACK → Recuperación</h2>
           </div>
           <p class="howto__summary" id="howto-summary" aria-live="polite">
             Esperando primera anomalía…
@@ -66,11 +96,6 @@
             <span class="howto__num" aria-hidden="true">1</span>
             <div class="howto__body">
               <h3 class="howto__label">Detección</h3>
-              <p class="howto__desc">
-                El nodo publica <strong>CPU</strong>, <strong>RAM</strong> y
-                <strong>latencia</strong>. Si una métrica cruza el umbral, se
-                marca una <strong>anomalía</strong>.
-              </p>
             </div>
             <span class="howto__state" data-state="pending"
               ><span class="howto__state-dot" aria-hidden="true"></span
@@ -81,11 +106,6 @@
             <span class="howto__num" aria-hidden="true">2</span>
             <div class="howto__body">
               <h3 class="howto__label">Comando</h3>
-              <p class="howto__desc">
-                El servidor detecta la anomalía y empuja una
-                <strong>acción correctiva</strong> al nodo afectado
-                (por ejemplo, <code>restart_service</code>).
-              </p>
             </div>
             <span class="howto__state" data-state="pending"
               ><span class="howto__state-dot" aria-hidden="true"></span
@@ -96,10 +116,6 @@
             <span class="howto__num" aria-hidden="true">3</span>
             <div class="howto__body">
               <h3 class="howto__label">ACK</h3>
-              <p class="howto__desc">
-                El nodo recibe el comando y responde con un
-                <strong>acuse de recibo</strong> confirmando que lo ejecutó.
-              </p>
             </div>
             <span class="howto__state" data-state="pending"
               ><span class="howto__state-dot" aria-hidden="true"></span
@@ -110,10 +126,6 @@
             <span class="howto__num" aria-hidden="true">4</span>
             <div class="howto__body">
               <h3 class="howto__label">Recuperación</h3>
-              <p class="howto__desc">
-                Las métricas vuelven a su rango normal y la
-                <strong>anomalía se cierra</strong>.
-              </p>
             </div>
             <span class="howto__state" data-state="pending"
               ><span class="howto__state-dot" aria-hidden="true"></span
@@ -137,7 +149,7 @@
           </div>
         </header>
         <p class="card__hint">
-          Dispara escenarios simulados sobre los nodos. El chart y los paneles
+          Dispara escenarios sobre los nodos. El chart, la flota y los eventos
           reaccionan en tiempo real. Las acciones de evidencia (capturas, nmap,
           bundle) generan artefactos en <code>artifacts/demo/</code>.
         </p>
@@ -165,7 +177,7 @@
         <div class="scenario__feedback" id="scenario-feedback" role="status" aria-live="polite"></div>
       </section>
 
-      <!-- Gráfico en tiempo real -->
+      <!-- Gráfico en tiempo real: central -->
       <section class="card chart" aria-labelledby="chart-titulo">
         <header class="card__header chart__head">
           <div>
@@ -207,52 +219,47 @@
         </footer>
       </section>
 
-      <!-- Paneles por nodo + eventos en paralelo -->
-      <div class="grid-2">
-        <section class="card nodes" aria-labelledby="nodes-titulo">
-          <header class="card__header">
-            <h2 id="nodes-titulo">Métricas por nodo</h2>
-            <span class="card__hint" id="nodes-hint">—</span>
-          </header>
-          <p class="legend-inline" id="nodes-legend">
-            <strong>Estados:</strong>
-            <span class="pill pill--mini" data-state="ok"
-              ><span class="pill__dot" aria-hidden="true"></span
-              ><span class="pill__label">en línea</span></span
-            >
-            datos al día (&lt; 5 s)
-            <span class="pill pill--mini" data-state="warn"
-              ><span class="pill__dot" aria-hidden="true"></span
-              ><span class="pill__label">sin actualización reciente</span></span
-            >
-            entre 5 y 15 s
-            <span class="pill pill--mini" data-state="error"
-              ><span class="pill__dot" aria-hidden="true"></span
-              ><span class="pill__label">sin señal</span></span
-            >
-            más de 15 s sin métricas
-            <span class="pill pill--mini" data-state="error"
-              ><span class="pill__dot" aria-hidden="true"></span
-              ><span class="pill__label">web · falla</span></span
-            >
-            servicio web caído
-          </p>
-          <div class="node-grid" id="node-grid"></div>
-          <p class="empty" id="nodes-empty" hidden>
-            Aún no hay métricas. Inicia el servidor y al menos un cliente para
-            empezar a ver datos.
-          </p>
-        </section>
+      <!-- Flota de nodos (anomaly roster): full width, grid denso -->
+      <section class="card nodes" aria-labelledby="nodes-titulo">
+        <header class="card__header">
+          <div>
+            <span class="card__eyebrow">flota de nodos</span>
+            <h2 id="nodes-titulo">Anomaly roster</h2>
+          </div>
+          <span class="card__hint" id="nodes-hint">—</span>
+        </header>
+        <!-- Roster explícito de la demo de 7 nodos. Cada chip señala el rol
+             que ese nodo está simulando. Si la flota no coincide (otra demo
+             o nodos manuales), la fila sólo se atenúa pero no desaparece. -->
+        <div class="demo-roster" id="demo-roster" aria-label="Roles del demo multi-nodo">
+          <span class="demo-roster__title">demo</span>
+          <span class="demo-chip" data-role="ok"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-01</span><span class="demo-chip__sep">·</span>normal</span>
+          <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-02</span><span class="demo-chip__sep">·</span>cpu alta</span>
+          <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-03</span><span class="demo-chip__sep">·</span>ram alta</span>
+          <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-04</span><span class="demo-chip__sep">·</span>latencia alta</span>
+          <span class="demo-chip" data-role="error"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-05</span><span class="demo-chip__sep">·</span>servicio caído</span>
+          <span class="demo-chip" data-role="error"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-06</span><span class="demo-chip__sep">·</span>evento fallido</span>
+          <span class="demo-chip" data-role="error"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-07</span><span class="demo-chip__sep">·</span>caos / aleatorio</span>
+        </div>
+        <div class="node-grid" id="node-grid"></div>
+        <p class="empty" id="nodes-empty" hidden>
+          Aún no hay métricas. El demo de 7 nodos debería arrancar
+          automáticamente al cargar la página.
+        </p>
+      </section>
 
+      <!-- Comandos y acks: 2-col con logs -->
+      <div class="row-2col">
         <section class="card events" aria-labelledby="events-titulo">
           <header class="card__header">
             <div>
+              <span class="card__eyebrow">actividad</span>
               <h2 id="events-titulo">Comandos y acks</h2>
-              <span class="card__hint" id="events-hint">—</span>
             </div>
+            <span class="card__hint" id="events-hint">—</span>
           </header>
           <p class="legend-inline" id="events-legend">
-            <strong>Tipos de evento:</strong>
+            <strong>Tipos:</strong>
             <span class="event__type event__type--anomaly">anomalía</span>
             métrica fuera de umbral
             <span class="event__type event__type--command">comando</span>
@@ -267,57 +274,19 @@
             Sin comandos ni acks recientes. Lanza un escenario para ver el flujo.
           </p>
         </section>
+
+        <section class="card logs" aria-labelledby="logs-titulo">
+          <header class="card__header">
+            <div>
+              <span class="card__eyebrow">logs</span>
+              <h2 id="logs-titulo">Cola de logs</h2>
+            </div>
+            <span class="card__hint">Niveles coloreados. Recorta a las últimas líneas.</span>
+          </header>
+          <pre class="log-tail" id="log-tail" aria-live="polite"></pre>
+          <p class="empty" id="logs-empty" hidden>Sin logs.</p>
+        </section>
       </div>
-
-      <!-- Resumen numérico -->
-      <section class="card overview" aria-labelledby="overview-titulo">
-        <header class="card__header">
-          <h2 id="overview-titulo">Estado del servidor</h2>
-          <span class="card__hint" id="overview-hint">Actualizado automáticamente</span>
-        </header>
-        <div class="stat-strip">
-          <div class="stat">
-            <span class="stat__label">Métricas</span>
-            <span class="stat__value" id="stat-metrics">—</span>
-            <span class="stat__hint" id="stat-metrics-hint">totales recibidas</span>
-          </div>
-          <div class="stat">
-            <span class="stat__label">Comandos</span>
-            <span class="stat__value" id="stat-commands">—</span>
-            <span class="stat__hint" id="stat-commands-hint">emitidos</span>
-          </div>
-          <div class="stat">
-            <span class="stat__label">ACKs</span>
-            <span class="stat__value" id="stat-acks">—</span>
-            <span class="stat__hint" id="stat-acks-hint">recibidos</span>
-          </div>
-          <div class="stat">
-            <span class="stat__label">Nodos activos</span>
-            <span class="stat__value" id="stat-nodes">—</span>
-            <span class="stat__hint" id="stat-nodes-hint">últimos ciclos</span>
-          </div>
-          <div class="stat">
-            <span class="stat__label">Última anomalía</span>
-            <span class="stat__value" id="stat-anomaly">—</span>
-            <span class="stat__hint" id="stat-anomaly-hint">—</span>
-          </div>
-          <div class="stat">
-            <span class="stat__label">Artefactos</span>
-            <span class="stat__value" id="stat-artifacts">—</span>
-            <span class="stat__hint" id="stat-artifacts-hint">en artifacts/demo/</span>
-          </div>
-        </div>
-      </section>
-
-      <!-- Logs -->
-      <section class="card logs" aria-labelledby="logs-titulo">
-        <header class="card__header">
-          <h2 id="logs-titulo">Cola de logs</h2>
-          <span class="card__hint">Niveles coloreados. Recorta a las últimas líneas.</span>
-        </header>
-        <pre class="log-tail" id="log-tail" aria-live="polite"></pre>
-        <p class="empty" id="logs-empty" hidden>Sin logs.</p>
-      </section>
     </main>
 
     <footer class="footbar">

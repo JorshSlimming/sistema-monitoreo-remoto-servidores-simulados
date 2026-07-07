@@ -10,6 +10,7 @@ from client.tcp_client import (
     PROGRESSIVE_FACTOR,
     ClientState,
     _apply_command,
+    _chaos_anomaly,
     _progressive_step,
     apply_command,
     build_initial_state,
@@ -253,6 +254,36 @@ class BuildMetricEnrichmentTests(unittest.TestCase):
         self.assertAlmostEqual(metric["cpu"], _BASE_METRIC["cpu"])
         self.assertEqual(metric["service_web"], _BASE_METRIC["service_web"])
         self.assertEqual(metric["event_log"], _BASE_METRIC["event_log"])
+
+
+class ChaosModeTests(unittest.TestCase):
+    """Chaos mode cycles through all anomaly types deterministically."""
+
+    def test_chaos_cycles_through_all_anomalies(self) -> None:
+        """Each seq picks the next anomaly in sorted-key order."""
+        keys = sorted(ANOMALY_MODES)
+        for seq, expected_key in enumerate(keys * 2):  # two full cycles
+            metric = build_metric("node-07", seq, "chaos")
+            expected = ANOMALY_MODES[expected_key]
+            for field, value in expected.items():
+                self.assertEqual(
+                    metric.get(field),
+                    value,
+                    f"seq={seq}, expected anomaly={expected_key}",
+                )
+
+    def test_chaos_is_deterministic(self) -> None:
+        """Same seq produces identical metric."""
+        m1 = build_metric("node-07", 0, "chaos")
+        m2 = build_metric("node-07", 0, "chaos")
+        self.assertEqual(m1, m2)
+
+    def test_chaos_anomaly_helper_direct(self) -> None:
+        """_chaos_anomaly returns the correct anomaly dict per seq."""
+        keys = sorted(ANOMALY_MODES)
+        for seq, expected_key in enumerate(keys):
+            result = _chaos_anomaly(seq)
+            self.assertEqual(result, ANOMALY_MODES[expected_key])
 
 
 if __name__ == "__main__":

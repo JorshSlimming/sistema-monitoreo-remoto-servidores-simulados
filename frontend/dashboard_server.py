@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
@@ -131,6 +131,24 @@ def _server_reachable(host: str, port: int) -> bool:
         return False
 
 
+def _recent_demo_nodes() -> set[str]:
+    """Return demo node IDs that have sent metrics in the last 60 seconds."""
+    demo_ids = {f"node-0{i}" for i in range(1, 8)}
+    if not _DB_PATH.exists():
+        return set()
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        conn = sqlite3.connect(str(_DB_PATH), timeout=2)
+        rows = conn.execute(
+            "SELECT DISTINCT node_id FROM metrics WHERE received_at > ?",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
+        return {r[0] for r in rows} & demo_ids
+    except (sqlite3.Error, FileNotFoundError):
+        return set()
+
+
 def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0, duration: float = 10.0) -> dict:
     """Run one or more real clients against the already-running monitor server."""
     monitor_host = _monitor_host()
@@ -144,8 +162,16 @@ def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0,
             specs = [
                 ("normal", "node-01"),
                 ("high-cpu", "node-02"),
-                ("high-latency", "node-03"),
+                ("high-ram", "node-03"),
+                ("high-latency", "node-04"),
+                ("service-failure", "node-05"),
+                ("failed-event", "node-06"),
+                ("chaos", "node-07"),
             ]
+            # Skip demo node IDs that are already sending metrics.
+            active = _recent_demo_nodes()
+            if active:
+                specs = [(m, nid) for m, nid in specs if nid not in active]
         else:
             specs = [(mode, node_id)]
 

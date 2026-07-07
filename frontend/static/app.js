@@ -37,6 +37,20 @@
     latency_ms: { warn: 100, error: 200, ymax: 400, unit: "ms" },
   };
 
+  // Demo role map for the 7-node multi-node scenario. Each node has a
+  // distinct anomaly role that survives real-time updates because the
+  // mapping is fixed in the frontend (the backend just spawns the
+  // clients; it doesn't tag their anomaly type in /api/state).
+  const DEMO_ROLES = {
+    "node-01": { label: "operación normal", short: "normal", tone: "ok" },
+    "node-02": { label: "cpu alta",         short: "cpu alta", tone: "warn" },
+    "node-03": { label: "ram alta",         short: "ram alta", tone: "warn" },
+    "node-04": { label: "latencia alta",    short: "latencia alta", tone: "warn" },
+    "node-05": { label: "servicio caído",   short: "servicio caído", tone: "error" },
+    "node-06": { label: "evento fallido",   short: "evento fallido", tone: "error" },
+    "node-07": { label: "caos / aleatorio", short: "caos / aleatorio", tone: "error" },
+  };
+
   // Color tokens per node series (CSS variable names).
   const SERIES = [
     { name: "node-01", color: "var(--info)" },
@@ -66,6 +80,8 @@
     reqSeq: 0,              // monotonic request sequence → stale-response guard
     hadAnomaly: false,      // causal-chain tracker: was there ever an anomaly?
     recoveryAt: null,       // causal-chain tracker: when the anomaly was last cleared
+    autoStartAttempted: false, // guard: only fire the multi-node auto-start once per page session
+    autoStartInFlight: false,  // guard: do not stack concurrent auto-start POSTs
   };
 
   // === Utils ==============================================================
@@ -423,6 +439,7 @@
       const isAlert = nodeAlert(node);
 
       const color = seriesColor(id);
+      const role = DEMO_ROLES[id] || null;
 
       // Badges
       const badges = [];
@@ -446,24 +463,32 @@
         ? `${escapeHtml(lastChange.label)}${lastChange.at ? ` · ${formatAgo(lastChange.at)}` : ""}`
         : null;
 
+      const roleHtml = role
+        ? `<div class="node__role" data-role="${role.tone}" title="Rol del demo multi-nodo"><span class="node__role-dot" aria-hidden="true"></span><span>${escapeHtml(role.label)}</span></div>`
+        : "";
+
+      const demoClass = role ? "node--demo" : "";
+      const roleAttr = role ? ` data-role="${role.tone}"` : "";
+
       return `
-<article class="node ${isAlert ? "node--alert" : ""} ${staleness.pill === "error" ? "node--stale" : ""}" data-node="${escapeHtml(id)}" style="--node-color:${color}">
+<article class="node ${isAlert ? "node--alert" : ""} ${staleness.pill === "error" ? "node--stale" : ""} ${demoClass}" data-node="${escapeHtml(id)}"${roleAttr} style="--node-color:${color}">
   <header class="node__head">
     <div class="node__id-block">
+      <span class="node__dot" aria-hidden="true"></span>
       <span class="node__id">${escapeHtml(id)}</span>
-      <span class="node__sub">${formatAgo(lastTs)}</span>
     </div>
     <div class="node__pills">
-      <span class="pill pill--ghost" data-state="${svcState}" title="Estado del servicio web del nodo">
+      <span class="pill pill--mini pill--ghost" data-state="${svcState}" title="Estado del servicio web del nodo">
         <span class="pill__dot" aria-hidden="true"></span>
         <span class="pill__label">web · ${escapeHtml(svcLabel)}</span>
       </span>
-      <span class="pill" data-state="${staleness.pill}" title="${escapeHtml(staleness.hint || staleness.label)}">
+      <span class="pill pill--mini" data-state="${staleness.pill}" title="${escapeHtml(staleness.hint || staleness.label)}">
         <span class="pill__dot" aria-hidden="true"></span>
         <span class="pill__label">${staleness.label}</span>
       </span>
     </div>
   </header>
+  ${roleHtml}
   <div class="node__metrics">
     <div class="metric">
       <div class="metric__row">
@@ -685,7 +710,7 @@
 
   // === Overview / stats strip =============================================
   function renderStats() {
-    const setStat = (idVal, idHint, val, hint) => {
+    const setKpi = (idVal, idHint, val, hint) => {
       const v = $id(idVal); const h = $id(idHint);
       if (v) v.textContent = val;
       if (h) h.textContent = hint;
@@ -695,33 +720,45 @@
     const hasServer = srv && typeof srv === "object" && Object.keys(srv).length > 0;
 
     if (!hasServer) {
-      setStat("stat-metrics", "stat-metrics-hint", "—", "sin datos");
-      setStat("stat-commands", "stat-commands-hint", "—", "sin datos");
-      setStat("stat-acks", "stat-acks-hint", "—", "sin datos");
-      setStat("stat-nodes", "stat-nodes-hint", "—", "sin datos");
-      setStat("stat-anomaly", "stat-anomaly-hint", "—", "sin datos");
-      setStat("stat-artifacts", "stat-artifacts-hint", "—", "0");
+      setKpi("kpi-metrics", "kpi-metrics-hint", "—", "sin datos");
+      setKpi("kpi-commands", "kpi-commands-hint", "—", "sin datos");
+      setKpi("kpi-acks", "kpi-acks-hint", "—", "sin datos");
+      setKpi("kpi-nodes", "kpi-nodes-hint", "—", "sin datos");
+      setKpi("kpi-anomaly", "kpi-anomaly-hint", "—", "sin anomalías activas");
+      setKpi("kpi-scenario", "kpi-scenario-hint", "—", "sin escenario activo");
       return;
     }
 
-    setStat("stat-metrics", "stat-metrics-hint", String(srv.metrics_total ?? 0), "totales recibidas");
-    setStat("stat-commands", "stat-commands-hint", String(srv.commands_total ?? 0), "emitidos");
-    setStat("stat-acks", "stat-acks-hint", String(srv.acks_total ?? 0), "recibidos");
+    setKpi("kpi-metrics", "kpi-metrics-hint", String(srv.metrics_total ?? 0), "totales recibidas");
+    setKpi("kpi-commands", "kpi-commands-hint", String(srv.commands_total ?? 0), "emitidos");
+    setKpi("kpi-acks", "kpi-acks-hint", String(srv.acks_total ?? 0), "recibidos");
 
     const nodeCount = Array.isArray(srv.active_nodes) ? srv.active_nodes.length : state.nodes.size;
-    setStat("stat-nodes", "stat-nodes-hint", String(nodeCount), "vistos en los últimos ciclos");
+    setKpi("kpi-nodes", "kpi-nodes-hint", String(nodeCount), "últimos ciclos");
 
-    // Check if any node has anomaly_active
+    // Anomaly: any node has anomaly_active
     const anyAnomaly = Array.from(state.nodes.values()).some((n) => n.anomaly_active);
+    const anomalyCard = $id("kpi-anomaly-card");
+    const anomalyValue = $id("kpi-anomaly");
     if (anyAnomaly) {
-      setStat("stat-anomaly", "stat-anomaly-hint", "activa", "anomalía detectada");
+      if (anomalyValue) anomalyValue.dataset.tone = "warn";
+      if (anomalyCard) anomalyCard.dataset.tone = "warn";
+      setKpi("kpi-anomaly", "kpi-anomaly-hint", "activa", "anomalía detectada");
     } else {
-      setStat("stat-anomaly", "stat-anomaly-hint", "—", "sin anomalías activas");
+      if (anomalyValue) anomalyValue.dataset.tone = "idle";
+      if (anomalyCard) anomalyCard.dataset.tone = "idle";
+      setKpi("kpi-anomaly", "kpi-anomaly-hint", "—", "sin anomalías activas");
     }
 
-    // Artifact count from state if available, else keep last known
-    const artifactCount = srv.metrics_total !== undefined ? srv.metrics_total : 0; // placeholder - not in state
-    setStat("stat-artifacts", "stat-artifacts-hint", "—", "artifacts/demo/");
+    // Scenario: from local state (the server doesn't echo this in /api/state)
+    if (state.scenario.name) {
+      const elapsed = state.scenario.startedAt
+        ? ` · ${formatDuration(Date.now() - state.scenario.startedAt)}`
+        : "";
+      setKpi("kpi-scenario", "kpi-scenario-hint", `${state.scenario.name}${elapsed}`, "en ejecución");
+    } else {
+      setKpi("kpi-scenario", "kpi-scenario-hint", "—", "sin escenario activo");
+    }
   }
 
   // === Mission + clock ====================================================
@@ -963,12 +1000,104 @@
     }, 1000);
   }
 
+  // === Auto-start: complete the 7-node demo fleet ==========================
+  // Why this exists: the user wants the dashboard to come up populated, not
+  // wait for a manual click. Guards:
+  //   1. In-memory `state.autoStartAttempted` is set BEFORE the network
+  //      call so a second poll loop tick cannot re-fire it.
+  //   2. `state.autoStartInFlight` rejects concurrent calls if some other
+  //      caller (e.g. a fast double-DOMContentLoaded) re-enters here.
+  //   3. `sessionStorage` with a 15 s TTL blocks re-fires across page
+  //      reloads during the ~10 s scenario window only — after that the
+  //      guard expires so a later refresh can auto-complete a still-
+  //      incomplete fleet.
+  //   4. We only POST when the fleet is incomplete (< 7 demo nodes), so
+  //      we never overwrite an already-running fleet.
+  const DEMO_NODE_IDS = ["node-01","node-02","node-03","node-04","node-05","node-06","node-07"];
+
+  function isFleetComplete() {
+    return DEMO_NODE_IDS.every((id) => state.nodes.has(id));
+  }
+
+  // sessionStorage TTL (ms) — block re-fires across page reloads only
+  // during the ~10 s scenario window so a mid-scenario refresh does not
+  // start a duplicate set of clients before the first batch finishes.
+  const AUTO_START_STORAGE_KEY = "multi-node-auto-started";
+  const AUTO_START_TTL_MS = 15000;
+
+  function readAutoStartFlag() {
+    try {
+      const raw = sessionStorage.getItem(AUTO_START_STORAGE_KEY);
+      if (raw === null) return false;
+      return Date.now() < parseInt(raw, 10);
+    } catch {
+      return state.autoStartAttempted;
+    }
+  }
+
+  function writeAutoStartFlag() {
+    try {
+      sessionStorage.setItem(
+        AUTO_START_STORAGE_KEY,
+        String(Date.now() + AUTO_START_TTL_MS),
+      );
+    } catch {
+      // ignored: in-memory flag is enough to prevent repeat fires in
+      // this page session.
+    }
+  }
+
+  async function tryAutoStartDemo() {
+    if (state.autoStartAttempted || state.autoStartInFlight) return;
+    if (readAutoStartFlag()) {
+      // Still inside the TTL window from a previous attempt; skip to
+      // avoid starting duplicate clients while the server is busy.
+      state.autoStartAttempted = true;
+      return;
+    }
+    // Fire when the fleet is incomplete (fewer than 7 demo nodes).
+    if (isFleetComplete()) return;
+
+    // Lock BEFORE awaiting so the next poll tick won't re-fire.
+    state.autoStartAttempted = true;
+    state.autoStartInFlight = true;
+    writeAutoStartFlag();
+
+    setFeedback("Iniciando demo multi-nodo (7 nodos)…", "info");
+    setScenarioState("multi-node", Date.now());
+    try {
+      const raw = await fetch(ACTIONS.scenario.path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ scenario: "multi-node", node_id: "node-01", interval: 3.0 }),
+      });
+      if (!raw.ok) throw new Error(`HTTP ${raw.status}`);
+      // Refresh immediately so the chart starts showing data.
+      await pollState();
+      renderAll();
+    } catch (err) {
+      setFeedback(`Falló auto-inicio: ${err.message || err}`, "error");
+    } finally {
+      state.autoStartInFlight = false;
+      // Scenario typically ends after ~10s on the server side; mark
+      // idle after a slightly longer window so the elapsed counter
+      // visibly stops before clearing.
+      setTimeout(() => {
+        if (state.scenario.name === "multi-node") setScenarioState(null);
+      }, 11000);
+    }
+  }
+
   // === Main loop ==========================================================
   let pollTimer = null;
 
   async function pollLoop() {
     await pollState();
     renderAll();
+    // Try the one-shot auto-start after the first state arrives. The
+    // helper short-circuits on every subsequent tick thanks to the
+    // state.autoStartAttempted flag, so this stays cheap.
+    tryAutoStartDemo();
     pollTimer = setTimeout(pollLoop, POLL_MS);
   }
 

@@ -135,10 +135,19 @@ Levanta en un solo comando:
 - dashboard HTTP
 - clientes reales persistentes
 
-Por defecto usa el perfil `trio`:
-- `node-01` normal
-- `node-02` high-cpu
-- `node-03` high-latency
+Por defecto usa el perfil `trio` (3 nodos). El dashboard también soporta un
+escenario `multi-node` desde `/api/scenario` que lanza 7 nodos cubriendo
+todas las anomalías más un nodo aleatorio (`chaos`):
+
+| Nodo | Modo | Efecto |
+|---|---|---|
+| `node-01` | `normal` | Métricas base |
+| `node-02` | `high-cpu` | CPU=95 |
+| `node-03` | `high-ram` | RAM=94 |
+| `node-04` | `high-latency` | latencia=350ms |
+| `node-05` | `service-failure` | service_web="falla" |
+| `node-06` | `failed-event` | event_log="backup fallido" |
+| `node-07` | `chaos` | Cicla por todas las anomalías |
 
 También puedes lanzar perfiles simples:
 
@@ -174,6 +183,7 @@ Modos disponibles:
 | `high-latency` | latencia=350ms → dispara `fix_latency`; la siguiente métrica empieza a bajar |
 | `service-failure` | service_web="falla" → dispara `restart_service` |
 | `failed-event` | event_log="backup fallido" → dispara `normalize_node` |
+| `chaos` | Cicla por todas las anomalías según el número de secuencia |
 
 El cliente se reconecta automáticamente cada 5 segundos si pierde la conexión. Cuando recibe un comando correctivo, cambia su estado interno y las métricas posteriores muestran recuperación progresiva.
 

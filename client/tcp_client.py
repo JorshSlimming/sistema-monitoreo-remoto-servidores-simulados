@@ -59,6 +59,16 @@ class ClientState:
         }
 
 
+def _chaos_anomaly(seq: int) -> dict[str, Any]:
+    """Deterministically cycle through all supported anomaly types.
+
+    Chaos mode picks a different anomaly on each tick by cycling
+    through sorted anomaly keys based on *seq*.
+    """
+    keys = sorted(ANOMALY_MODES)
+    return ANOMALY_MODES[keys[seq % len(keys)]]
+
+
 def build_initial_state(mode: str) -> dict[str, Any]:
     """Compatibility helper for dict-based callers/tests from origin/main."""
     state = dict(_BASE_METRIC)
@@ -152,7 +162,9 @@ def build_metric(
         **_BASE_METRIC,
         "token": token,
     }
-    if mode in ANOMALY_MODES and (state is None or not isinstance(state, ClientState) or state.anomaly_active):
+    if mode == "chaos" and (state is None or not isinstance(state, ClientState) or state.anomaly_active):
+        metric.update(_chaos_anomaly(seq))
+    elif mode in ANOMALY_MODES and (state is None or not isinstance(state, ClientState) or state.anomaly_active):
         metric.update(ANOMALY_MODES[mode])
     if isinstance(state, dict):
         metric.update(state)
@@ -269,7 +281,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", type=float, default=5.0, help="Seconds between metrics")
     parser.add_argument(
         "--mode",
-        choices=["normal", *sorted(ANOMALY_MODES)],
+        choices=["normal", "chaos", *sorted(ANOMALY_MODES)],
         default="normal",
         help="Anomaly mode for demo",
     )

@@ -5,6 +5,10 @@ _VALID_TOKENS: dict[str, str] = {
     "node-01": "node-01-secret",
     "node-02": "node-02-secret",
     "node-03": "node-03-secret",
+    "node-04": "node-04-secret",
+    "node-05": "node-05-secret",
+    "node-06": "node-06-secret",
+    "node-07": "node-07-secret",
 }
 
 

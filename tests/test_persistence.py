@@ -161,6 +161,42 @@ class PersistenceIntegrationTest(unittest.TestCase):
         sock.close()
         time.sleep(0.1)
 
+    def test_failed_ack_marks_command_failed(self) -> None:
+        """A failed ACK is persisted as failed, not overwritten as confirmed."""
+        sock = self._open_connection()
+        self._send_metric(sock, "node-01", 1, cpu=95.0, ram=45.0)
+
+        time.sleep(0.3)
+        raw = sock.recv(4096)
+        command = None
+        for line in raw.split(b"\n"):
+            if not line:
+                continue
+            msg = json.loads(line.decode("utf-8").strip())
+            if msg.get("type") == "command":
+                command = msg
+                break
+
+        self.assertIsNotNone(command)
+        assert command is not None
+        cid = command["command_id"]
+
+        ack = {
+            "type": "ack",
+            "node_id": "node-01",
+            "command_id": cid,
+            "status": "failed",
+            "token": get_token("node-01") or "unknown",
+        }
+        sock.sendall(_encode(ack))
+        time.sleep(0.2)
+
+        self.assertEqual(self._store._command_status(cid), "failed")
+        self.assertEqual(self._state.sent_commands[cid].status, "failed")
+
+        sock.close()
+        time.sleep(0.1)
+
     # ----------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------

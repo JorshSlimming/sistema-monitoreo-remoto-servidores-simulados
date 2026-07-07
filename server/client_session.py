@@ -126,10 +126,9 @@ class ClientSession:
         if not ack_data:
             return
         cid, status = ack_data
-        self.state.confirm_command(cid)
+        self.state.finish_command(cid, status)
         if self.store is not None and self.node_id is not None:
             self.store.save_ack(cid, self.node_id, status)
-            self.store.update_command_status(cid, "confirmed")
         print(f"[ack] {ack}")
 
     def _extract_metric(self, metric: dict[str,Any]) -> tuple[float,float,float,str,str | None] | None:

@@ -162,7 +162,7 @@ sqlite3 data/monitor.db "SELECT * FROM acks;"
 ```
 
 **Resultado esperado:** Las tres tablas contienen filas. Las métricas incluyen campos
-`mitigation_active` y `mitigation_type`. Los comandos tienen estado (`pending`, `confirmed`, `timed_out`).
+`mitigation_active` y `mitigation_type`. Los comandos tienen estado (`pending`, `confirmed`, `failed`, `timed_out`).
 
 ---
 
@@ -174,7 +174,7 @@ make test
 python3 -m unittest discover -s tests -v
 ```
 
-Ejecuta **46 pruebas** que cubren:
+Ejecuta **53 pruebas** que cubren:
 - Construcción de métricas en todos los modos
 - Codificación/decodificación de mensajes
 - Estados del servidor (timeout, confirmación)

@@ -1,6 +1,6 @@
 """Minimal token validation for Phase 0."""
 
-# ponytail: static tokens; per-account/store when real auth is needed
+# Static demo tokens; use a proper secret store for production auth.
 _VALID_TOKENS: dict[str, str] = {
     "node-01": "node-01-secret",
     "node-02": "node-02-secret",

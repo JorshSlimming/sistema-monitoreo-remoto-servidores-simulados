@@ -139,7 +139,7 @@ La suite principal se ejecuta con:
 python3 -m unittest discover -s tests -v
 ```
 
-Estado actual verificado en este repositorio: **46 pruebas, todas pasan**.
+Estado actual verificado en este repositorio: **53 pruebas, todas pasan**.
 
 Las pruebas cubren:
 

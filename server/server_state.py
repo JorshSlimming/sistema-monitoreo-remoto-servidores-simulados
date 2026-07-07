@@ -114,13 +114,16 @@ class ServerState:
                 del self.sent_commands[cid]
             return len(expired)
 
-    def confirm_command(self, cid: int) -> bool:
+    def finish_command(self, cid: int, ack_status: str) -> bool:
         with self._lock:
             command = self.sent_commands.get(cid)
             if command is None:
                 return False
-            command.status = "confirmed"
+            command.status = "confirmed" if ack_status == "applied" else "failed"
             return True
+
+    def confirm_command(self, cid: int) -> bool:
+        return self.finish_command(cid, "applied")
 
 
 

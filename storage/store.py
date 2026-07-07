@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS acks (
 );
 """
 
-# ponytail: additive columns; safe to run against existing databases
+# Additive columns; safe to run against existing databases.
 _EXTRA_COLUMNS = [
     ("scenario", "TEXT", "''"),
     ("anomaly_active", "INTEGER", "1"),
@@ -169,7 +169,7 @@ class DatabaseStore:
         with self._lock:
             self._conn.close()
 
-    # ponytail: row-count helpers for testing, not a full query API
+    # Row-count helpers for tests, not a full query API.
     def _count_metrics(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]

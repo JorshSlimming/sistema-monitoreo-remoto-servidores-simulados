@@ -104,7 +104,7 @@ Si hay tiempo, repetir con `Multi-nodo`.
 python3 -m unittest discover -s tests -v
 ```
 
-- **Resultado actual:** 46 pruebas, todas pasan.
+- **Resultado actual:** 53 pruebas, todas pasan.
 - Cobertura: cliente, servidor, persistencia, reglas de anomalía.
 - Insertar captura real de la ejecución.
 

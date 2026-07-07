@@ -17,7 +17,7 @@ Sistema completo con:
 | Dashboard web en tiempo real | Implementado (polling `/api/state` cada 1s) |
 | Backend `/api/state` como fuente única de verdad | Implementado |
 | Persistencia SQLite (métricas, comandos, ACKs) | Implementado |
-| Pruebas unitarias y de integración | **46 pruebas — pasan** |
+| Pruebas unitarias y de integración | **53 pruebas — pasan** |
 | Captura de tráfico con Wireshark | Documentado |
 | Escaneo con Nmap | Documentado |
 

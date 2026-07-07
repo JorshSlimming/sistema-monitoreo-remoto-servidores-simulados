@@ -9,6 +9,12 @@ class ServerStateTests(unittest.TestCase):
         state = ServerState()
         self.assertFalse(state.confirm_command(999))
 
+    def test_failed_command_does_not_trigger_cooldown(self) -> None:
+        state = ServerState()
+        state.register_command(1, "reduce_cpu", "node-01")
+        self.assertTrue(state.finish_command(1, "failed"))
+        self.assertFalse(state.is_action_pending("reduce_cpu", "node-01"))
+
     def test_expired_command_is_pruned_and_not_pending(self) -> None:
         state = ServerState()
         state.register_command(1, "restart_service", "node-01")

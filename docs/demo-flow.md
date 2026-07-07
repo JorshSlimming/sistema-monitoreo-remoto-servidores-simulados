@@ -178,6 +178,28 @@ Ver `docs/evidence/README.md` para la descripción de cada archivo generado.
 
 ---
 
+## Paso opcional 9: Simulación de ataques (defensa en profundidad)
+
+Si el tiempo lo permite, ejecutar el simulador de ataques para demostrar
+que el protocolo resiste intentos de bypass:
+
+```bash
+make attack
+```
+
+Esto ejecuta 7 ataques controlados y muestra cuáles fueron detectados
+correctamente. También se puede generar evidencia de ataque:
+
+```bash
+make attack-evidence
+```
+
+Los resultados quedan en `artifacts/demo/attack_results_<timestamp>.json`.
+
+Ver `docs/attack-simulation.md` para más detalles.
+
+---
+
 ## Resumen de verificación
 
 | Aspecto | Comando de verificación |

@@ -501,6 +501,79 @@ def _build_artifacts_payload() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Attack API helpers
+# ---------------------------------------------------------------------------
+
+_ATTACK_CATALOG: list[dict] | None = None
+
+
+def _get_attack_catalog() -> list[dict]:
+    """Return the catalog of available attacks from the attacker module."""
+    global _ATTACK_CATALOG
+    if _ATTACK_CATALOG is not None:
+        return _ATTACK_CATALOG
+    try:
+        from attacker.attack_simulator import ATTACKS
+        _ATTACK_CATALOG = [
+            {
+                "key": key,
+                "label": info["label"],
+                "description": info["description"],
+            }
+            for key, info in ATTACKS.items()
+        ]
+    except ImportError:
+        _ATTACK_CATALOG = [{"error": "attacker module not available"}]
+    return _ATTACK_CATALOG
+
+
+def _build_attacks_payload() -> dict:
+    """Return available attack list with optional latest results."""
+    return {
+        "attacks": _get_attack_catalog(),
+        "total": len(_get_attack_catalog()),
+        "generated_at": _now(),
+    }
+
+
+def _latest_attack_artifact() -> dict | None:
+    """Return the latest attack run artifact (type starts with 'attack_run')."""
+    return _latest_artifact("attack_run")
+
+
+def _build_attack_status_payload() -> dict:
+    """Return attack subsystem status."""
+    latest = _latest_attack_artifact()
+    status: dict[str, object] = {
+        "available": _server_reachable(_monitor_host(), _MONITOR_CONFIG.port),
+        "target": f"{_monitor_host()}:{_MONITOR_CONFIG.port}",
+        "available_attacks": len(_get_attack_catalog()),
+        "last_run": None,
+        "last_run_at": None,
+        "last_run_summary": None,
+    }
+    if latest:
+        details = latest.get("details", {})
+        status["last_run"] = latest.get("timestamp")
+        status["last_run_at"] = latest.get("timestamp")
+        runs = details.get("results", [])
+        if isinstance(runs, list):
+            total = len(runs)
+            passed = sum(1 for r in runs if r.get("success"))
+            status["last_run_summary"] = {
+                "total": total,
+                "passed": passed,
+                "failed": total - passed,
+                "attack_id": latest.get("artifact_id", latest.get("filename", "")),
+            }
+    return status
+
+
+# ---------------------------------------------------------------------------
+# DB / metrics helpers
+# ---------------------------------------------------------------------------
+
 def _fetch_metrics(limit: int = 200, nodes: tuple[str, ...] | None = None) -> list[dict]:
     """Return recent metrics from SQLite, newest first.
 
@@ -854,6 +927,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._send_json({"count": len(logs), "logs": logs})
         elif path == "/api/state":
             self._send_json(_build_state_payload())
+        elif path == "/api/attacks":
+            self._send_json(_build_attacks_payload())
+        elif path == "/api/attack/latest":
+            self._send_json(_latest_attack_artifact() or {"error": "no_attack_artifacts"})
+        elif path == "/api/attack/status":
+            self._send_json(_build_attack_status_payload())
         else:
             super().do_GET()
 
@@ -872,6 +951,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "/api/nmap": self._handle_nmap,
             "/api/tshark-capture": self._handle_tshark,
             "/api/screenshots": self._handle_screenshots,
+            "/api/attack/run": self._handle_attack_run,
         }
         handler = handlers.get(path)
         if handler:
@@ -1068,6 +1148,55 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "screenshots": screenshots,
             "files": [str((_SCREENSHOTS_DIR / name).relative_to(_PROJECT_ROOT)) for name in screenshots],
         })
+        self._send_json(artifact)
+
+    def _handle_attack_run(self, body: dict | None = None) -> None:
+        """Run the attacker simulator and persist artifact.
+
+        Body parameters:
+            attack (str): attack key or 'all' (default: all)
+            host (str): target host (default: 127.0.0.1)
+            port (int): target port (default: monitor port)
+            json (bool): JSON output (default: True)
+        """
+        attack = (body or {}).get("attack", "all")
+        attack_host = (body or {}).get("host", "127.0.0.1")
+        attack_port = int((body or {}).get("port", _MONITOR_CONFIG.port))
+
+        # Enforce local-only target
+        if attack_host not in {"127.0.0.1", "localhost", "::1"}:
+            if os.environ.get("ALLOW_NON_LOCAL_ATTACK_TARGET") != "1":
+                self._send_json({"error": "non_local_target_denied",
+                                 "message": "Attack target must be localhost unless ALLOW_NON_LOCAL_ATTACK_TARGET=1"}, status=403)
+                return
+
+        cmd = [
+            sys.executable,
+            "-m", "attacker.attack_simulator",
+            "--host", attack_host,
+            "--port", str(attack_port),
+            "--attack", attack,
+            "--json",
+            "--timeout", str((body or {}).get("timeout", 5.0)),
+        ]
+        result = _run_cmd(cmd, timeout=120)
+        details: dict = {
+            "success": result["success"],
+            "returncode": result["returncode"],
+            "attack": attack,
+            "target": f"{attack_host}:{attack_port}",
+            "stdout": result["stdout"],
+            "stderr": result["stderr"],
+        }
+        # Parse the JSON output if available
+        if result["stdout"]:
+            try:
+                parsed = json.loads(result["stdout"])
+                details["results"] = parsed if isinstance(parsed, list) else [parsed]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        artifact = _save_artifact("attack_run", f"Attack simulation: {attack}", details)
         self._send_json(artifact)
 
     # ---- Wire helpers ----

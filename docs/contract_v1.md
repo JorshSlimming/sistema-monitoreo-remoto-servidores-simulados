@@ -154,6 +154,15 @@ Codigos principales:
 - `AUTH_FAILED`
 - `SERVER_ERROR`
 
+### Validación cross-node de ACKs
+
+El servidor rechaza ACKs cuyo `command_id` corresponde a un comando emitido
+para un nodo distinto del autenticado en el canal seguro. Esto impide que
+un nodo comprometido confirme comandos de otro nodo.
+
+Si el `command_id` del ACK pertenece a otro nodo, el servidor responde
+`AUTH_FAILED` y no persiste el ACK ni cambia el estado del comando.
+
 ## Reglas de anomalia
 
 | Condicion | Comando |

@@ -238,6 +238,71 @@
         </p>
       </section>
 
+      <!-- Simulación de atacante local: panel compacto de validación académica.
+           NO pretende ser consola ofensiva; sólo enumera ataques locales
+           autorizados y compara resultado esperado vs. observado. -->
+      <section class="card attacker" aria-labelledby="attacker-titulo">
+        <header class="card__header attacker__head">
+          <div class="attacker__head-text">
+            <span class="card__eyebrow">pruebas controladas</span>
+            <h2 id="attacker-titulo">Simulación de atacante local</h2>
+          </div>
+          <div class="attacker__status-strip" role="status" aria-live="polite">
+            <span class="pill pill--mini" id="attacker-server-pill" data-state="loading">
+              <span class="pill__dot" aria-hidden="true"></span>
+              <span class="pill__label">servidor: comprobando…</span>
+            </span>
+            <span class="attacker__target" id="attacker-target">objetivo 127.0.0.1:5000</span>
+            <span class="attacker__last-run" id="attacker-last-run">última ejecución: —</span>
+          </div>
+        </header>
+        <p class="card__hint attacker__hint">
+          Pruebas locales autorizadas para demostrar autenticación, integridad,
+          antireplay y validación de mensajes.
+        </p>
+        <div class="attacker__controls" role="group" aria-label="Controles de simulación de atacante local">
+          <label class="attacker__field">
+            <span class="attacker__label">Ataque</span>
+            <select class="attacker__select" id="attacker-select" aria-label="Ataque a ejecutar">
+              <option value="all">Todos</option>
+            </select>
+          </label>
+          <div class="attacker__buttons">
+            <button class="btn btn--action" type="button" id="attacker-run">Ejecutar ataque</button>
+            <button class="btn btn--ghost" type="button" id="attacker-refresh">Actualizar último resultado</button>
+          </div>
+        </div>
+        <div class="attacker__feedback" id="attacker-feedback" role="status" aria-live="polite"></div>
+        <div class="attacker__table-wrap">
+          <table class="attacker__table" id="attacker-table" aria-describedby="attacker-titulo">
+            <thead>
+              <tr>
+                <th scope="col">Ataque</th>
+                <th scope="col">Resultado esperado</th>
+                <th scope="col">Resultado observado</th>
+                <th scope="col">Estado</th>
+                <th scope="col">Respuesta del servidor</th>
+              </tr>
+            </thead>
+            <tbody id="attacker-tbody">
+              <tr class="attacker__empty-row" id="attacker-empty-row">
+                <td colspan="5">
+                  <span class="attacker__empty-title">Sin resultados todavía</span>
+                  <span class="attacker__empty-hint">
+                    Selecciona un ataque y pulsa <strong>Ejecutar ataque</strong>.
+                    Los resultados se contrastan contra el resultado esperado.
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <details class="attacker__details" id="attacker-details">
+          <summary>Detalle técnico (JSON)</summary>
+          <pre class="attacker__pre" id="attacker-pre">Sin detalle.</pre>
+        </details>
+      </section>
+
       <!-- Comandos y acks: 2-col con logs -->
       <div class="row-2col">
         <section class="card events" aria-labelledby="events-titulo">

@@ -4,7 +4,7 @@ Este directorio contiene documentación sobre cómo generar y recolectar evidenc
 
 ## Artefactos generados automáticamente
 
-Ejecutando `./scripts/generate_demo_artifacts.sh` (o `make evidence`) se generan los siguientes archivos bajo `artifacts/demo/`.
+Ejecutando `make evidence` se generan los artefactos normales de demo **y** los artefactos de simulación de atacante bajo `artifacts/demo/`. Si solo quieres la parte clásica, puedes correr `./scripts/generate_demo_artifacts.sh` manualmente.
 
 > Importante: ejecútalo **sin** un servidor TCP ya corriendo en `127.0.0.1:5000`. El script levanta sus propios escenarios y falla temprano si el puerto ya está ocupado.
 
@@ -69,10 +69,24 @@ El script `scripts/generate_demo_screenshots.sh` intenta capturar el dashboard a
 
 ## Verificación de integridad
 
-Cada ejecución de `make evidence` genera un archivo `evidence_index.json` con la lista completa de artefactos producidos y sus metadatos (tamaño, timestamp, estado).
+Cada ejecución de `make evidence` genera un archivo `evidence_index.json` con la lista completa de artefactos producidos y sus metadatos (tamaño, timestamp, estado), incluyendo la corrida de ataques.
+
+## Artefactos de ataque
+
+Ejecutando `make attack-evidence` (o `./scripts/generate_attack_evidence.sh`) se
+generan artefactos adicionales que documentan la respuesta del sistema a ataques
+simulados:
+
+| Archivo | Contenido | Método |
+|---|---|---|
+| `attack_results_<timestamp>.json` | Resultados JSON de los 7 ataques simulados | Automático |
+
+Ver `docs/attack-simulation.md` para más detalles sobre el simulador de ataques
+y la integración con el dashboard.
 
 ## Documentación relacionada
 
+- `docs/attack-simulation.md` — simulador de ataques autorizado
 - `docs/evidence/wireshark.md` — guía detallada de captura con Wireshark
 - `docs/evidence/nmap.md` — guía detallada de escaneo con Nmap
 - `docs/demo-flow.md` — flujo de demostración paso a paso

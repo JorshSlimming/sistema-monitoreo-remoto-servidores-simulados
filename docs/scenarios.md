@@ -166,6 +166,44 @@ sqlite3 data/monitor.db "SELECT * FROM acks;"
 
 ---
 
+---
+
+## Escenario 12 — Simulación de ataques (defensa del protocolo)
+
+Ejecutar el simulador de ataques autorizado contra el servidor local para
+verificar que las defensas del protocolo funcionan correctamente:
+
+```bash
+make attack
+# o
+python3 -m attacker.attack_simulator --attack all
+```
+
+**Resultado esperado:** Los 7 ataques son detectados y rechazados por el servidor.
+Cada ataque muestra `✓ PASS` y un resumen de la respuesta del servidor.
+
+Ver `docs/attack-simulation.md` para el catálogo completo.
+
+---
+
+## Escenario 13 — Rechazo de ACK cross-node
+
+Conectar un cliente como `node-01` y otro como `node-02`. El ACK de `node-01`
+para un comando emitido a `node-02` debe ser rechazado.
+
+```bash
+# Terminal 2: node-02 envía métrica que dispara comando
+python3 -m client.tcp_client --node-id node-02 --mode high-cpu --interval 1.0 --max-metrics 1
+```
+
+Luego intentar (vía test o ataque) que `node-01` envíe un ACK para el comando
+de `node-02`. El servidor debe responder con `AUTH_FAILED`.
+
+**Resultado esperado:** El ACK cross-node es rechazado; el comando permanece en
+estado `pending` en la base de datos.
+
+---
+
 ## Pruebas automáticas
 
 ```bash
@@ -174,7 +212,7 @@ make test
 python3 -m unittest discover -s tests -v
 ```
 
-Ejecuta **63 pruebas** que cubren:
+Las pruebas cubren:
 - Construcción de métricas en todos los modos
 - Codificación/decodificación de mensajes
 - Estados del servidor (timeout, confirmación)
@@ -184,6 +222,10 @@ Ejecuta **63 pruebas** que cubren:
 - Actualización de estado de comandos al recibir ACK
 - Construcción del payload `/api/state`
 - Autenticación PSK multi-nodo y canal cifrado
+- Simulador de ataques (7 ataques, resultado shape + detección real)
+- Endpoints de ataque del dashboard (/api/attacks, /api/attack/run, etc.)
+- Rechazo de ACK cross-node
+- No persistencia de métricas de ataques (tampered, replay, plaintext)
 
 ## Verificación rápida con API REST
 

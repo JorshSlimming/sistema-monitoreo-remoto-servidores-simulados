@@ -16,3 +16,9 @@ captures/
 *.sqlite3
 .slim/deepwork/
 .slim/session/
+.cortexkit/
+.tmp-pcap/
+/captura_demo.pcapng
+/sistema-monitoreo-remoto-servidores-simulados.zip
+*:Zone.Identifier
+.docs

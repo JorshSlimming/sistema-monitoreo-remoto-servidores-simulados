@@ -77,6 +77,17 @@
     recoveryAt: null,       // causal-chain tracker: when the anomaly was last cleared
     autoStartAttempted: false, // guard: only fire the multi-node auto-start once per page session
     autoStartInFlight: false,  // guard: do not stack concurrent auto-start POSTs
+    // === Simulación de atacante local ====================================
+    // Kept independent from the 1 s /api/state poll so the attacks panel
+    // does not add load to the ingest/render path. Updates only on user
+    // action (run, refresh) or on boot.
+    attacks: {
+      catalog: [],          // [{ id, name, expected_result, description }]
+      results: new Map(),   // attack_id → result row
+      status: null,         // { available, target, last_run_at, last_attack_id } | null
+      selected: "all",
+      inFlight: false,
+    },
   };
 
   // === Utils ==============================================================
@@ -993,6 +1004,579 @@
       renderNodes();
       renderHowto();
     }, 1000);
+
+    // === Simulación de atacante local bindings ===========================
+    const select = $id("attacker-select");
+    if (select) {
+      select.addEventListener("change", (e) => {
+        state.attacks.selected = String(e.target.value || "all");
+      });
+    }
+    const runBtn = $id("attacker-run");
+    if (runBtn) {
+      runBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        runAttacker();
+      });
+    }
+    const refreshBtn = $id("attacker-refresh");
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        refreshAttackerLatest();
+      });
+    }
+  }
+
+  // === Simulación de atacante local =======================================
+  // Endpoints (explicit contract; backend may not be ready yet):
+  //   GET    /api/attacks         → catalog of attacks
+  //   POST   /api/attack/run      → body: { attack: "all" | "<id>" }
+  //   GET    /api/attack/latest   → most recent run
+  //   GET    /api/attack/status   → server availability + target + last_run_at
+  // Field names are kept loose on purpose: the exact backend payload shape
+  // is not yet known, so we read several common variants and degrade to
+  // "—" when a field is missing.
+
+  const ATTACKER_ENDPOINTS = {
+    catalog: "/api/attacks",
+    run: "/api/attack/run",
+    latest: "/api/attack/latest",
+    status: "/api/attack/status",
+  };
+
+  // Default fallback catalog used when the backend is unreachable or its
+  // response shape is empty. The Spanish labels match the academic
+  // protocol-validation framing requested in the brief.
+  const ATTACKER_FALLBACK_CATALOG = [
+    { id: "plaintext-metric", name: "Métrica en claro", expected_result: "Rechazado correctamente" },
+    { id: "unknown-node", name: "Nodo desconocido", expected_result: "Rechazado correctamente" },
+    { id: "bad-psk", name: "PSK inválida", expected_result: "Rechazado correctamente" },
+    { id: "node-mismatch", name: "Cambio de identidad", expected_result: "Rechazado correctamente" },
+    { id: "invalid-metric", name: "Métrica inválida", expected_result: "Rechazado correctamente" },
+    { id: "tampered-frame", name: "Frame manipulado", expected_result: "Rechazado correctamente" },
+    { id: "replay-frame", name: "Replay", expected_result: "Rechazado correctamente" },
+  ];
+
+  // Three-state mapping → badge variant. Any other status string falls
+  // into "no_response" (closed / no server reply) so the row never reads
+  // as a silent unknown.
+  const ATTACKER_BADGE = {
+    rejected:        { label: "Rechazado correctamente", cls: "attacker__badge--rejected" },
+    defense_failed:  { label: "Falló la defensa",        cls: "attacker__badge--defense_failed" },
+    no_response:     { label: "Sin respuesta / conexión cerrada",
+                       cls: "attacker__badge--no_response" },
+    pending:         { label: "En curso…",               cls: "attacker__badge--pending" },
+  };
+
+  // Tolerant string → canonical status. Accepts several shapes the
+  // backend may use: Spanish ("rechazado"), English ("rejected", "ok"),
+  // HTTP-ish ("forbidden"), or category booleans.
+  function attackerClassifyStatus(input) {
+    if (input == null) return "no_response";
+    if (typeof input === "boolean") return input ? "rejected" : "defense_failed";
+    const s = String(input).toLowerCase().trim();
+    if (!s) return "no_response";
+    if (/(rechaz|rejected|rechazado|forbid|denied|unauthor|invalid|drop|bloq)/.test(s)) return "rejected";
+    if (/(acept|accept|ok\b|pass\b|allow)/.test(s)) return "defense_failed";
+    if (/(fail|fall|falla|defense|breach|leak|expos)/.test(s)) return "defense_failed";
+    if (/(timeout|connect|reset|closed|offline|unreach|sin_resp|sin resp|sin respuesta)/.test(s)) return "no_response";
+    if (/(200|201|204|401|403|409|422)/.test(s)) {
+      // 4xx → the server answered and rejected → good defense.
+      if (/^4\d\d$/.test(s)) return "rejected";
+      if (/^2\d\d$/.test(s)) return "defense_failed";
+    }
+    return "no_response";
+  }
+
+  function attackerPick(obj, keys, fallback) {
+    if (!obj || typeof obj !== "object") return fallback;
+    for (const k of keys) {
+      if (obj[k] != null) return obj[k];
+    }
+    return fallback;
+  }
+
+  function attackerUnwrapArray(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (payload && typeof payload === "object") {
+      for (const k of ["attacks", "catalog", "items", "data", "results"]) {
+        if (Array.isArray(payload[k])) return payload[k];
+      }
+    }
+    return null;
+  }
+
+  function attackerNormalizeCatalogEntry(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const id = String(
+      raw.id ?? raw.attack_id ?? raw.key ?? raw.slug ?? raw.name ?? ""
+    ).trim();
+    if (!id) return null;
+    const name = String(
+      raw.name ?? raw.label ?? raw.title ?? raw.id ?? id
+    );
+    const expected = String(
+      raw.expected_result ?? raw.expected ?? raw.expectation ??
+        "Rechazado correctamente"
+    );
+    return { id, name, expected_result: expected, description: raw.description ?? "" };
+  }
+
+  function attackerNormalizeResultRow(raw, fallback) {
+    const obj = raw && typeof raw === "object" ? raw : {};
+    const fb = fallback || {};
+    const id = String(
+      fb.id ?? obj.attack ?? obj.id ?? obj.attack_id ?? obj.name ?? "unknown"
+    );
+    const name = String(obj.name ?? obj.label ?? fb.name ?? id);
+    const expected = String(
+      obj.expected_result ?? obj.expected ?? fb.expected_result ??
+        "Rechazado correctamente"
+    );
+    const observed = String(
+      obj.observed_result ?? obj.observed ?? obj.result ?? obj.outcome ??
+        obj.server_response ?? obj.observed_error ?? "—"
+    );
+    const statusRaw = obj.status ?? obj.verdict ?? obj.outcome_status ??
+      obj.attack_status ?? obj.result_status ?? obj.success;
+    const status = attackerClassifyStatus(statusRaw);
+    const serverResponse = String(
+      obj.server_response ?? obj.response ?? obj.message ?? obj.detail ??
+        obj.details?.message ?? "—"
+    );
+    return {
+      attack_id: id,
+      name,
+      expected_result: expected,
+      observed_result: observed,
+      status,
+      status_raw: statusRaw == null ? "" : String(statusRaw),
+      server_response: serverResponse,
+      ran_at: obj.ran_at ?? obj.timestamp ?? obj.at ?? null,
+      raw: obj,
+    };
+  }
+
+  function attackerExtractRows(payload) {
+    if (Array.isArray(payload)) return payload;
+    if (!payload || typeof payload !== "object") return [];
+    const direct = attackerUnwrapArray(payload);
+    if (Array.isArray(direct)) return direct;
+    if (payload.details && typeof payload.details === "object") {
+      const nested = attackerUnwrapArray(payload.details);
+      if (Array.isArray(nested)) return nested;
+    }
+    return [payload];
+  }
+
+  // === Attacker rendering =================================================
+
+  function attackerSetFeedback(text, tone = "info") {
+    const el = $id("attacker-feedback");
+    if (!el) return;
+    if (!text) {
+      el.textContent = "";
+      delete el.dataset.tone;
+      return;
+    }
+    el.dataset.tone = tone;
+    el.textContent = text;
+  }
+
+  function attackerSetServerPill(state_, label) {
+    const pill = $id("attacker-server-pill");
+    if (!pill) return;
+    pill.dataset.state = state_;
+    const t = pill.querySelector(".pill__label");
+    if (t) t.textContent = label;
+  }
+
+  function attackerRenderStatus() {
+    const target = $id("attacker-target");
+    const lastRun = $id("attacker-last-run");
+    const srv = state.attacks.status || {};
+    const host = srv.target
+      ? String(srv.target)
+      : (state.server && (state.server.host || state.server.target))
+        ? `${state.server.host || ""}${state.server.port ? ":" + state.server.port : ""}`.replace(/^:/, "127.0.0.1:5000")
+        : "127.0.0.1:5000";
+    if (target) target.textContent = `objetivo ${host}`;
+    if (lastRun) {
+      const ts = srv.last_run_at || lastResultTimestamp();
+      lastRun.textContent = ts ? `última ejecución: ${formatTime(ts)}` : "última ejecución: —";
+    }
+  }
+
+  function lastResultTimestamp() {
+    let best = null;
+    for (const r of state.attacks.results.values()) {
+      if (r && r.ran_at && (!best || r.ran_at > best)) best = r.ran_at;
+    }
+    return best;
+  }
+
+  function attackerRenderSelector() {
+    const select = $id("attacker-select");
+    if (!select) return;
+    const catalog = state.attacks.catalog;
+    const current = state.attacks.selected;
+    const opts = ['<option value="all">Todos</option>'];
+    for (const a of catalog) {
+      opts.push(
+        `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`
+      );
+    }
+    select.innerHTML = opts.join("");
+    if (catalog.some((a) => a.id === current)) {
+      select.value = current;
+    } else {
+      select.value = "all";
+      state.attacks.selected = "all";
+    }
+  }
+
+  function attackerRenderTable() {
+    const tbody = $id("attacker-tbody");
+    const empty = $id("attacker-empty-row");
+    if (!tbody) return;
+
+    const catalog = state.attacks.catalog;
+    const results = state.attacks.results;
+    // The table always lists the full catalog in catalog order so a
+    // fresh page or a re-run shows the audit shape, not just what has
+    // been executed. Rows without results render as "pending".
+    if (catalog.length === 0) {
+      tbody.replaceChildren();
+      if (empty) {
+        empty.hidden = false;
+        tbody.appendChild(empty);
+      }
+      return;
+    }
+
+    if (empty) empty.hidden = true;
+    const flashIds = attackerFlashTracker.consume();
+
+    const rows = catalog.map((a) => {
+      const r = results.get(a.id);
+      const status = r ? r.status : "pending";
+      const badge = ATTACKER_BADGE[status] || ATTACKER_BADGE.pending;
+      const flashCls = flashIds.has(a.id) ? " attacker__row--flash" : "";
+      return `<tr class="attacker__row${flashCls}" data-attack="${escapeHtml(a.id)}">
+        <td class="col-name">${escapeHtml(a.name)}</td>
+        <td class="col-expected">${escapeHtml(a.expected_result)}</td>
+        <td class="col-observed">${r ? escapeHtml(r.observed_result || "—") : "—"}</td>
+        <td class="col-status"><span class="attacker__badge ${badge.cls}">${escapeHtml(badge.label)}</span></td>
+        <td class="col-response" title="${escapeHtml(r ? r.server_response || "" : "")}">${escapeHtml(r ? r.server_response || "—" : "—")}</td>
+      </tr>`;
+    });
+    tbody.innerHTML = rows.join("");
+  }
+
+  // Track which rows were just updated so we can flash them on the next
+  // render. This is render-safe: the tracker is consumed in renderTable
+  // and never accumulates across renders.
+  const attackerFlashTracker = (() => {
+    const set = new Set();
+    return {
+      mark(ids) {
+        for (const id of ids || []) set.add(id);
+      },
+      consume() {
+        const out = new Set(set);
+        set.clear();
+        return out;
+      },
+    };
+  })();
+
+  function attackerRenderDetail(latest) {
+    const pre = $id("attacker-pre");
+    const details = $id("attacker-details");
+    if (!pre) return;
+    const payload = latest && latest.raw
+      ? latest.raw
+      : (latest || null);
+    if (!payload) {
+      pre.textContent = "Sin detalle.";
+      if (details) details.open = false;
+      return;
+    }
+    try {
+      pre.textContent = JSON.stringify(payload, null, 2);
+    } catch {
+      pre.textContent = String(payload);
+    }
+  }
+
+  function attackerSetButtonsDisabled(disabled) {
+    const run = $id("attacker-run");
+    const ref = $id("attacker-refresh");
+    const sel = $id("attacker-select");
+    if (run) { run.disabled = disabled; run.dataset.busy = disabled ? "true" : "false"; }
+    if (ref) { ref.disabled = disabled; ref.dataset.busy = disabled ? "true" : "false"; }
+    if (sel) { sel.disabled = disabled; }
+  }
+
+  // === Attacker fetch wrappers ============================================
+
+  async function fetchAttackerStatus() {
+    try {
+      const res = await fetch(ATTACKER_ENDPOINTS.status, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        state.attacks.status = { available: false, target: null, last_run_at: null };
+        attackerSetServerPill("error", "servidor: no disponible");
+        return null;
+      }
+      const data = await res.json().catch(() => ({}));
+      const target = attackerPick(data, ["target", "host_port", "endpoint"], null);
+      const available = attackerPick(data, ["available", "ok", "ready"], true);
+      const lastRunAt = attackerPick(data, ["last_run_at", "lastRunAt", "last"], null);
+      const lastId = attackerPick(data, ["last_attack_id", "lastAttackId", "attack_id"], null);
+      state.attacks.status = {
+        available: !!available,
+        target: target ? String(target) : null,
+        last_run_at: lastRunAt || null,
+        last_attack_id: lastId || null,
+      };
+      attackerSetServerPill(
+        state.attacks.status.available ? "ok" : "error",
+        state.attacks.status.available
+          ? `servidor: disponible${state.attacks.status.target ? " · " + state.attacks.status.target : ""}`
+          : "servidor: no disponible"
+      );
+      return state.attacks.status;
+    } catch {
+      // Backend not up yet → render a clear "no disponible" state without
+      // a stack trace. The status pill + table both stay calm.
+      state.attacks.status = { available: false, target: null, last_run_at: null };
+      const tgt = (state.server && state.server.host)
+        ? `${state.server.host}:${state.server.port ?? ""}`.replace(/:$/, "")
+        : "127.0.0.1:5000";
+      attackerSetServerPill("error", `servidor: no disponible en ${tgt}`);
+      return null;
+    }
+  }
+
+  async function fetchAttackerCatalog() {
+    try {
+      const res = await fetch(ATTACKER_ENDPOINTS.catalog, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        state.attacks.catalog = ATTACKER_FALLBACK_CATALOG.slice();
+        attackerRenderSelector();
+        return state.attacks.catalog;
+      }
+      const data = await res.json().catch(() => ({}));
+      const arr = attackerUnwrapArray(data);
+      const normalized = (arr || [])
+        .map(attackerNormalizeCatalogEntry)
+        .filter(Boolean);
+      state.attacks.catalog = normalized.length > 0
+        ? normalized
+        : ATTACKER_FALLBACK_CATALOG.slice();
+      attackerRenderSelector();
+      return state.attacks.catalog;
+    } catch {
+      state.attacks.catalog = ATTACKER_FALLBACK_CATALOG.slice();
+      attackerRenderSelector();
+      return state.attacks.catalog;
+    }
+  }
+
+  async function fetchAttackerLatest() {
+    try {
+      const res = await fetch(ATTACKER_ENDPOINTS.latest, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      const rows = attackerExtractRows(data);
+      if (rows.length === 0) return null;
+      const updatedIds = [];
+      let lastRow = null;
+      for (const raw of rows) {
+        const row = attackerNormalizeResultRow(raw);
+        state.attacks.results.set(row.attack_id, row);
+        updatedIds.push(row.attack_id);
+        lastRow = row;
+      }
+      attackerFlashTracker.mark(updatedIds);
+      return lastRow;
+    } catch {
+      return null;
+    }
+  }
+
+  async function postAttackerRun(attackId) {
+    const res = await fetch(ATTACKER_ENDPOINTS.run, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ attack: attackId }),
+    });
+    const text = await res.text();
+    let payload = {};
+    if (text) { try { payload = JSON.parse(text); } catch { /* non-JSON response → keep empty */ } }
+    if (!res.ok) {
+      const msg = (payload && (payload.error || payload.message)) || `HTTP ${res.status}`;
+      const err = new Error(msg);
+      err.status = res.status;
+      err.payload = payload;
+      throw err;
+    }
+    return payload;
+  }
+
+  // === Attacker actions ===================================================
+
+  async function runAttacker() {
+    if (state.attacks.inFlight) return;
+    const selected = state.attacks.selected || "all";
+    const catalog = state.attacks.catalog;
+    const targets = selected === "all"
+      ? catalog.map((a) => a.id)
+      : [selected];
+
+    if (targets.length === 0) {
+      attackerSetFeedback("Catálogo vacío. Probando a recargar el catálogo…", "warn");
+      await fetchAttackerCatalog();
+      return;
+    }
+
+    state.attacks.inFlight = true;
+    attackerSetButtonsDisabled(true);
+    attackerSetFeedback(
+      targets.length === 1
+        ? `Ejecutando: ${catalog.find((a) => a.id === targets[0])?.name || targets[0]}…`
+        : `Ejecutando ${targets.length} ataques en secuencia…`,
+      "info"
+    );
+
+    const okIds = [];
+    const errIds = [];
+    let lastRow = null;
+    try {
+      for (const id of targets) {
+        // Insert a "pending" row so the table reflects the in-flight run
+        // even before the server replies.
+        const fbEntry = catalog.find((a) => a.id === id) || { id, name: id, expected_result: "Rechazado correctamente" };
+        const pendingRow = attackerNormalizeResultRow(
+          { attack_id: id, name: fbEntry.name, expected_result: fbEntry.expected_result,
+            observed_result: "—", status: "pending", server_response: "esperando respuesta…" },
+          fbEntry
+        );
+        pendingRow.status = "pending";
+        pendingRow.server_response = "esperando respuesta…";
+        state.attacks.results.set(id, pendingRow);
+        attackerFlashTracker.mark([id]);
+        attackerRenderTable();
+
+        try {
+          const payload = await postAttackerRun(id);
+          const rows = attackerExtractRows(payload);
+          if (rows.length === 0) {
+            throw new Error("respuesta vacía del simulador");
+          }
+          const updatedIds = [];
+          for (const raw of rows) {
+            const row = attackerNormalizeResultRow(raw, fbEntry);
+            state.attacks.results.set(row.attack_id, row);
+            updatedIds.push(row.attack_id);
+            lastRow = row;
+          }
+          attackerFlashTracker.mark(updatedIds);
+          okIds.push(id);
+        } catch (err) {
+          const fb = catalog.find((a) => a.id === id) || { id, name: id, expected_result: "Rechazado correctamente" };
+          const errRow = attackerNormalizeResultRow(
+            {
+              attack_id: id, name: fb.name, expected_result: fb.expected_result,
+              observed_result: "—",
+              status: "no_response",
+              server_response: err.message || `HTTP ${err.status || "?"}`,
+            },
+            fb
+          );
+          state.attacks.results.set(id, errRow);
+          errIds.push(id);
+          lastRow = errRow;
+        }
+        attackerFlashTracker.mark([id]);
+        attackerRenderTable();
+        attackerRenderDetail(lastRow);
+        attackerRenderStatus();
+      }
+
+      // Re-fetch status so "última ejecución" updates with the
+      // backend's authoritative last_run_at.
+      await fetchAttackerStatus().catch(() => {});
+      attackerRenderStatus();
+
+      if (errIds.length === 0) {
+        const label = targets.length === 1
+          ? `Listo: ${catalog.find((a) => a.id === targets[0])?.name || targets[0]}`
+          : `Listo: ${okIds.length} ataques ejecutados`;
+        attackerSetFeedback(label, "success");
+      } else if (okIds.length === 0) {
+        attackerSetFeedback(
+          `Falló: servidor no disponible. Detalle en la columna “Respuesta del servidor”.`,
+          "error"
+        );
+      } else {
+        attackerSetFeedback(
+          `Parcial: ${okIds.length} ok, ${errIds.length} con error.`,
+          "warn"
+        );
+      }
+    } finally {
+      state.attacks.inFlight = false;
+      attackerSetButtonsDisabled(false);
+    }
+  }
+
+  async function refreshAttackerLatest() {
+    if (state.attacks.inFlight) return;
+    state.attacks.inFlight = true;
+    attackerSetButtonsDisabled(true);
+    attackerSetFeedback("Actualizando último resultado…", "info");
+    try {
+      const [latest, status] = await Promise.all([
+        fetchAttackerLatest(),
+        fetchAttackerStatus(),
+      ]);
+      if (latest) {
+        attackerRenderDetail(latest);
+        attackerSetFeedback(`Último resultado: ${latest.name} → ${ATTACKER_BADGE[latest.status]?.label || latest.status}`, "success");
+      } else if (status && status.available) {
+        attackerSetFeedback("Sin resultados todavía. Ejecuta un ataque.", "warn");
+      } else {
+        attackerSetFeedback("Servidor no disponible. No se pudo actualizar.", "error");
+      }
+      attackerRenderStatus();
+      attackerRenderTable();
+    } finally {
+      state.attacks.inFlight = false;
+      attackerSetButtonsDisabled(false);
+    }
+  }
+
+  // Boot-time fetch: catalog + status, no latest (the server may not have
+  // any result yet on a fresh page). Kept on its own path so a backend
+  // outage never blocks the main /api/state poll.
+  async function bootAttacker() {
+    if (!$id("attacker-table")) return; // section not on this page
+    await Promise.all([fetchAttackerCatalog(), fetchAttackerStatus()]);
+    attackerRenderSelector();
+    attackerRenderTable();
+    attackerRenderStatus();
+    attackerRenderDetail(null);
   }
 
   // === Auto-start: complete the 7-node demo fleet ==========================
@@ -1105,6 +1689,9 @@
   document.addEventListener("DOMContentLoaded", () => {
     bind();
     tickClock();
+    // Attacker panel: independent boot path so a backend outage on the
+    // /api/attack/* endpoints never blocks the main state poll.
+    bootAttacker();
     pollLoop();
   });
 })();

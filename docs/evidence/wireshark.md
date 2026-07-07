@@ -8,6 +8,11 @@ Capturar y analizar el trafico TCP entre cliente y servidor para verificar:
 - Handshake de autenticacion PSK (`hello`, `challenge`, `challenge_response`, `ready`).
 - Uso posterior de frames `secure` cifrados.
 - Cierre de conexion y reconexion automatica.
+- Rechazo de trafico invalido durante la simulacion de atacante local autorizada.
+
+> Alcance: esta guia cubre una simulacion local autorizada para demo academica.
+> No es un pentest real y el canal seguro de aplicacion no reemplaza TLS en un
+> despliegue productivo.
 
 ## Requisitos
 
@@ -27,6 +32,18 @@ python3 -m client.tcp_client --node-id node-01 --mode high-cpu
 ```
 
 6. Dejar correr unos segundos y detener la captura.
+
+### Variante: simulacion de atacante local
+
+Con la captura activa, tambien puedes ejecutar:
+
+```bash
+python3 -m attacker.attack_simulator --attack all --json
+```
+
+En este caso deberias observar intentos rechazados por el servidor, por
+ejemplo `HANDSHAKE_REQUIRED`, `AUTH_FAILED`, cierre de conexion por frame
+manipulado o rechazo de secuencia repetida.
 
 ### Paquetes esperados
 
@@ -48,6 +65,10 @@ python3 -m client.tcp_client --node-id node-01 --mode high-cpu
 Los mensajes del handshake se ven como JSON legible. Despues de `ready`, Wireshark
 solo debe mostrar frames `secure` con campos como `seq`, `nonce`, `ciphertext` y
 `tag`; el payload real (`metric`, `command`, `ack`) no debe aparecer en claro.
+
+Durante la simulacion de atacante, tampoco deberia verse una metrica valida en
+claro aceptada por el servidor: los intentos invalidos deben terminar en error o
+en cierre de conexion.
 
 ### Filtros utiles
 
@@ -77,6 +98,8 @@ Para la entrega, capturar:
 3. Frames `secure` posteriores con `ciphertext`.
 4. Reconexion tras detener y reiniciar el servidor.
 5. Cierre de conexion cuando el cliente se desconecta.
+6. Un ataque rechazado (por ejemplo `plaintext-metric` o `tampered-frame`) con
+   el error correspondiente del protocolo.
 
 Este repositorio no incluye archivos `.pcap` precapturados; las capturas deben
 generarse en vivo durante la demostracion.

@@ -76,13 +76,18 @@ class ClientSession:
             self.send_error("INVALID_MESSAGE", "node_id is required")
             return
 
+        current_node_id = self.node_id
+        if current_node_id is None:
+            self.send_error("AUTH_FAILED", "secure channel is not bound to a node")
+            return
+
         peer = f"{self.address[0]}:{self.address[1]}"
         seq = metric.get("seq")
         if not isinstance(seq, int) or seq < 0:
             self.send_error("INVALID_MESSAGE", "sequence number must be a non-negative integer")
             return
-        self.state.mark_connected(self.node_id, peer, seq)
-        self.state.mark_seen(self.node_id, seq)
+        self.state.mark_connected(current_node_id, peer, seq)
+        self.state.mark_seen(current_node_id, seq)
         if seq % 10 == 0:
             self.state.cleanup_expired()
 
@@ -106,7 +111,7 @@ class ClientSession:
                 last_command=str(metric.get("last_command", "")),
             )
         self._send_orders(cpu, ram, latency_ms, service_web, event_log)
-        print(f"[metric] {self.node_id}: {metric}")
+        print(f"[metric] {current_node_id}: {metric}")
 
     def _handle_ack(self, ack: dict[str, Any]) -> None:
         node_id = ack.get("node_id")
@@ -168,6 +173,11 @@ class ClientSession:
             return None
         if cid not in self.state.sent_commands:
             self.send_error("INVALID_MESSAGE", "repeated ack or ack for nonexistent command")
+            return None
+        # Cross-node protection: reject ACK for a command that was sent to a different node.
+        cmd = self.state.sent_commands[cid]
+        if cmd.node_id != self.node_id:
+            self.send_error("AUTH_FAILED", f"command {cid} was sent to {cmd.node_id}, not {self.node_id}")
             return None
         status = ack.get("status")
         if status not in ["applied", "failed"]:

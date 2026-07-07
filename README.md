@@ -18,9 +18,12 @@ Sistema completo con:
 | Dashboard web en tiempo real | Implementado (polling `/api/state` cada 1s) |
 | Backend `/api/state` como fuente única de verdad | Implementado |
 | Persistencia SQLite (métricas, comandos, ACKs) | Implementado |
-| Pruebas unitarias y de integración | **63 pruebas — pasan** |
+| Pruebas unitarias y de integración | Implementado |
 | Captura de tráfico con Wireshark | Documentado |
 | Escaneo con Nmap | Documentado |
+| Simulador de ataques autorizado | Implementado (7 ataques contra protocolo) |
+| Dashboard endpoints de ataque | Implementado (4 endpoints) |
+| Validación cross-node ACK | Implementado (rechaza ACK de otro nodo) |
 
 ## Contrato técnico
 
@@ -266,10 +269,12 @@ Ver:
 ## Makefile
 
 ```bash
-make test       # Ejecutar pruebas
-make demo       # Iniciar proyecto (servidor + frontend)
-make evidence   # Generar artefactos de evidencia
-make clean      # Limpiar artefactos y logs
+make test           # Ejecutar pruebas
+make demo           # Iniciar proyecto (servidor + frontend)
+make evidence       # Generar artefactos de evidencia + ataques
+make attack         # Ejecutar simulador de ataques
+make attack-evidence # Generar artefactos de ataque
+make clean          # Limpiar artefactos y logs
 ```
 
 Ver `Makefile` para detalles.

@@ -1,2 +1,3 @@
 # Rol A initial base uses only the Python standard library.
 # Optional test tools can be added later by the testing role.
+cryptography>=41.0.0

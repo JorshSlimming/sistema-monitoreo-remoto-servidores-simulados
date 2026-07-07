@@ -338,6 +338,27 @@ def _fetch_commands(limit: int = 100) -> list[dict]:
         return []
 
 
+def _fetch_acks(limit: int = 100) -> list[dict]:
+    """Return recent acks from SQLite, newest first."""
+    if not _DB_PATH.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(_DB_PATH), timeout=2)
+        rows = conn.execute(
+            "SELECT command_id, node_id, status, received_at "
+            "FROM acks ORDER BY received_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [
+            {"command_id": r[0], "node_id": r[1],
+             "status": r[2], "received_at": r[3]}
+            for r in rows
+        ]
+    except (sqlite3.Error, FileNotFoundError):
+        return []
+
+
 def _tail_log(source: str, max_lines: int = 200) -> list[dict]:
     """Tail a log file, returning up to *max_lines* entries.
 
@@ -414,6 +435,38 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "count": len(metrics),
                 "nodes": node_ids,
                 "metrics": metrics,
+            })
+        elif path == "/api/events":
+            # UI-supporting: merge commands + acks as a chronological
+            # activity stream for the dashboard. No protocol change.
+            limit = int(qs.get("limit", ["50"])[0])
+            commands = _fetch_commands(limit=limit)
+            acks = _fetch_acks(limit=limit)
+            events: list[dict] = []
+            for c in commands:
+                events.append({
+                    "type": "command",
+                    "command_id": c.get("command_id"),
+                    "action": c.get("action"),
+                    "reason": c.get("reason"),
+                    "node_id": c.get("node_id"),
+                    "status": c.get("status"),
+                    "timestamp": c.get("issued_at"),
+                })
+            for a in acks:
+                events.append({
+                    "type": "ack",
+                    "command_id": a.get("command_id"),
+                    "node_id": a.get("node_id"),
+                    "status": a.get("status"),
+                    "timestamp": a.get("received_at"),
+                })
+            events.sort(key=lambda e: str(e.get("timestamp") or ""), reverse=True)
+            self._send_json({
+                "count": len(events),
+                "commands_total": len(commands),
+                "acks_total": len(acks),
+                "events": events[:limit],
             })
         elif path == "/api/logs":
             max_lines = int(qs.get("lines", ["100"])[0])

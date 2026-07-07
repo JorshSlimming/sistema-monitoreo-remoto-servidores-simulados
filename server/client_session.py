@@ -5,14 +5,6 @@ from typing import Any
 from server.command_dispatcher import CommandDispatcher
 from server.server_config import ServerConfig
 from server.server_state import ServerState
-from server.auth_handler import (
-    encrypt_message,
-    decrypt_message,
-    encode_encrypted_message,
-    decode_encrypted_message,
-    load_psk_config,
-    get_node_psk,
-)
 from shared.auth import validate_token
 from storage.store import DatabaseStore
 
@@ -35,22 +27,13 @@ class ClientSession:
         self.store = store
         self.node_id: str | None = None
         self._buffer = b""
-        self.authenticated = False
-        self.psk: bytes | None = None
 
     def run(self) -> None:
         peer = f"{self.address[0]}:{self.address[1]}"
         print(f"[server] client connected from {peer}")
 
         try:
-            # Perform authentication handshake
-            if not self._perform_handshake():
-                print(f"[server] authentication failed for {peer}")
-                return
-            
-            print(f"[server] {self.node_id} authenticated successfully")
-            
-            # Process regular messages after authentication
+            # Process messages — authentication is per-message via token (shared/auth.py)
             while True:
                 chunk = self.conn.recv(4096)
                 if not chunk:
@@ -68,98 +51,7 @@ class ClientSession:
             self.conn.close()
             print(f"[server] client disconnected from {peer}")
 
-    def _perform_handshake(self) -> bool:
-        """
-        Perform PSK-based authentication handshake:
-        1. Receive node_id from client
-        2. Lookup PSK and send encrypted challenge
-        3. Receive encrypted response from client
-        4. Validate response and establish authentication
-        """
-        peer = f"{self.address[0]}:{self.address[1]}"
-        
-        # Step 1: Receive node_id from client
-        try:
-            self.conn.settimeout(5)
-            node_id_data = self.conn.recv(4096)
-            self.conn.settimeout(None)
-        except socket.timeout:
-            print(f"[server] handshake timeout waiting for node_id from {peer}")
-            return False
-        
-        if not node_id_data:
-            print(f"[server] client disconnected during handshake from {peer}")
-            return False
-        
-        try:
-            # Parse node_id message
-            node_id_msg = json.loads(node_id_data.decode(self.config.encoding).strip())
-            if not isinstance(node_id_msg, dict) or node_id_msg.get("type") != "auth_init":
-                print(f"[server] invalid auth_init message from {peer}")
-                return False
-            
-            self.node_id = node_id_msg.get("node_id")
-            if not isinstance(self.node_id, str) or not self.node_id:
-                print(f"[server] invalid node_id in auth_init from {peer}")
-                return False
-        except (ValueError, UnicodeDecodeError) as e:
-            print(f"[server] error parsing auth_init from {peer}: {e}")
-            return False
-        
-        # Step 2: Load PSK from configuration
-        psk_config = load_psk_config()
-        self.psk = get_node_psk(self.node_id, psk_config)
-        
-        if self.psk is None:
-            print(f"[server] no PSK configured for node {self.node_id}")
-            return False
-        
-        # Step 3: Send encrypted challenge
-        challenge = {"type": "auth_challenge_response", "message": "Please authenticate"}
-        
-        try:
-            ciphertext, nonce, salt = encrypt_message(challenge, self.psk)
-            encrypted_line = encode_encrypted_message(ciphertext, nonce, salt)
-            self.conn.sendall((encrypted_line + self.config.message_separator).encode(self.config.encoding))
-        except Exception as e:
-            print(f"[server] error sending encrypted challenge to {self.node_id}: {e}")
-            return False
-        
-        # Step 4: Receive encrypted response from client
-        try:
-            self.conn.settimeout(5)
-            response_data = self.conn.recv(4096)
-            self.conn.settimeout(None)
-        except socket.timeout:
-            print(f"[server] handshake timeout waiting for response from {self.node_id}")
-            return False
-        
-        if not response_data:
-            print(f"[server] client disconnected during handshake from {self.node_id}")
-            return False
-        
-        # Step 5: Validate response
-        try:
-            response_line = response_data.decode(self.config.encoding).strip()
-            ciphertext, nonce, salt = decode_encrypted_message(response_line)
-            response_msg = decrypt_message(ciphertext, nonce, salt, self.psk)
-            
-            if response_msg.get("type") != "auth_response":
-                print(f"[server] invalid auth_response from {self.node_id}")
-                return False
-            
-            # Verify the response contains the expected acknowledgment
-            if response_msg.get("acknowledged") != True:
-                print(f"[server] client failed to acknowledge challenge from {self.node_id}")
-                return False
-        except Exception as e:
-            print(f"[server] error validating encrypted response from {self.node_id}: {e}")
-            return False
-        
-        # Authentication successful
-        self.authenticated = True
-        print(f"[auth] {self.node_id} completed PSK authentication handshake")
-        return True
+
 
     def _process_buffer(self) -> None:
 
@@ -169,31 +61,9 @@ class ClientSession:
             if line:
                 self._handle_line(line)
 
-    def _decrypt_line(self, line: bytes) -> dict[str, Any] | None:
-        """Decrypt an encrypted message line after authentication"""
-        if not self.authenticated or not self.psk:
-            return None
-        
-        try:
-            line_str = line.decode(self.config.encoding).strip()
-            ciphertext, nonce, salt = decode_encrypted_message(line_str)
-            message = decrypt_message(ciphertext, nonce, salt, self.psk)
-            return message
-        except Exception as e:
-            print(f"[server] error decrypting message from {self.node_id}: {e}")
-            return None
-
     def _handle_line(self, line: bytes) -> None:
         try:
-            # After authentication, messages are encrypted
-            if self.authenticated:
-                message = self._decrypt_line(line)
-                if message is None:
-                    self.send_error("DECRYPT_ERROR", "failed to decrypt message")
-                    return
-            else:
-                # Shouldn't happen, but handle just in case
-                message = self._decode_json_line(line)
+            message = self._decode_json_line(line)
         except ValueError as exc:
             print(f"[server] invalid JSON from {self.address[0]}:{self.address[1]}: {exc}")
             self.send_error("INVALID_JSON", "received malformed JSON")
@@ -326,19 +196,8 @@ class ClientSession:
         print(f"[command] {self.node_id}: {command}")
 
     def _send(self, message: dict[str, Any]) -> None:
-        if self.authenticated and self.psk:
-            # Encrypt message after authentication
-            try:
-                ciphertext, nonce, salt = encrypt_message(message, self.psk)
-                encrypted_line = encode_encrypted_message(ciphertext, nonce, salt)
-                line = encrypted_line + self.config.message_separator
-                self.conn.sendall(line.encode(self.config.encoding))
-            except Exception as e:
-                print(f"[server] error sending encrypted message to {self.node_id}: {e}")
-        else:
-            # Shouldn't happen, but fallback to unencrypted
-            line = json.dumps(message, separators=(",", ":")) + self.config.message_separator
-            self.conn.sendall(line.encode(self.config.encoding))
+        line = json.dumps(message, separators=(",", ":")) + self.config.message_separator
+        self.conn.sendall(line.encode(self.config.encoding))
 
     def _decode_json_line(self, line: bytes) -> dict[str, Any]:
         text = line.decode(self.config.encoding).strip()

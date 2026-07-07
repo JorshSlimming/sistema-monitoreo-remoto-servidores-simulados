@@ -6,48 +6,71 @@ Por definir segun el grupo.
 
 ## Estado
 
-Pendiente.
+Implementado. Persistencia SQLite (monitor.db) con 3 tablas, pruebas unitarias y de integración automáticas, scripts de escenario, captura de tráfico con tshark, escaneo Nmap documentado.
 
 ## Responsabilidad principal
 
 Convertir el funcionamiento del sistema en evidencia reproducible. Este rol implementa persistencia, prepara pruebas, automatiza escenarios y documenta el comportamiento de red con Wireshark y, si corresponde, Nmap en el entorno autorizado.
 
-## Archivos sugeridos
+## Archivos reales
 
 ```text
-storage/repository.py
-storage/sqlite_store.py
-storage/event_logger.py
-storage/query_history.py
-storage/storage_config.json
-tests/test_protocol.py
-tests/test_client_server.py
-tests/test_reconnection.py
-tests/test_multiple_clients.py
-tests/test_invalid_messages.py
-tests/integration_runner.py
-scripts/run_server.ps1
-scripts/run_clients.ps1
-scripts/reset_environment.ps1
-scripts/capture_traffic.ps1
+storage/store.py              Persistencia SQLite (métricas, comandos, ACKs)
+tests/test_persistence.py     Integración: servidor real + SQLite
+tests/test_tcp_client.py      Unitarias: formato y construcción de métricas
+tests/test_server_state.py    Unitarias: estados del servidor
+tests/mock_server.py          Servidor TCP mínimo para pruebas aisladas
+tests/malformed_json_client.py Prueba de respuesta a JSON inválido
+scripts/run_all_tests.sh      Ejecuta `unittest discover`
+scripts/run_server.sh         Inicia el servidor TCP
+scripts/run_client.sh         Inicia el cliente persistente
+scripts/run_scenario.sh       Ejecuta escenarios de prueba completos
+scripts/reset_environment.sh  Limpia BD, capturas y __pycache__
+scripts/run_project.sh        Levanta servidor + panel frontend
+scripts/stop_project.sh       Detiene el proyecto
+scripts/capture_traffic.sh    Captura tráfico con tcpdump
+scripts/generate_demo_artifacts.sh  Pipeline completo de evidencia
 ```
 
-## Persistencia esperada
+## Persistencia implementada
 
-Se recomienda SQLite con campos minimos:
+SQLite con tres tablas (ver `storage/store.py`):
 
-```text
-timestamp
-node_id
-cpu
-ram
-latency_ms
-service_web
-event_log
-alerta_detectada
-comando_enviado
-respuesta_del_cliente
-```
+**Tabla `metrics`** — cada métrica recibida:
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `id` | INTEGER | Clave primaria (autoincremental) |
+| `node_id` | TEXT | Identificador del nodo |
+| `seq` | INTEGER | Secuencia del cliente |
+| `cpu` | REAL | Porcentaje de CPU (0-100) |
+| `ram` | REAL | Porcentaje de RAM (0-100) |
+| `latency_ms` | REAL | Latencia en milisegundos |
+| `service_web` | TEXT | Estado del servicio web (`ok`/`falla`) |
+| `event_log` | TEXT | Descripción de evento |
+| `received_at` | TEXT | Timestamp UTC ISO 8601 |
+
+**Tabla `commands`** — comandos emitidos por el servidor:
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `id` | INTEGER | Clave primaria |
+| `command_id` | INTEGER | ID del comando |
+| `action` | TEXT | Acción (`reduce_cpu`, etc.) |
+| `reason` | TEXT | Motivo del comando |
+| `node_id` | TEXT | Nodo destino |
+| `status` | TEXT | `pending`, `timed_out` o `confirmed` |
+| `issued_at` | TEXT | Timestamp ISO 8601 |
+
+**Tabla `acks`** — confirmaciones de los clientes:
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `id` | INTEGER | Clave primaria |
+| `command_id` | INTEGER | ID del comando confirmado |
+| `node_id` | TEXT | Nodo que respondió |
+| `status` | TEXT | `applied` o `failed` |
+| `received_at` | TEXT | Timestamp ISO 8601 |
 
 Consultas utiles:
 

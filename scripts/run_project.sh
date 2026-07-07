@@ -72,6 +72,7 @@ echo ""
 
 # limpiar restos de ejecuciones anteriores para no chocar con puertos
 pkill -f "python3 -m server.tcp_server" 2>/dev/null || true
+pkill -f "python3 -m frontend.dashboard_server" 2>/dev/null || true
 pkill -f "python3 frontend/dashboard_server.py" 2>/dev/null || true
 sleep 0.5
 

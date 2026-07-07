@@ -138,23 +138,24 @@ Levanta en un solo comando:
 - dashboard HTTP
 - clientes reales persistentes
 
-Por defecto usa el perfil `trio` (3 nodos). El dashboard también soporta un
-escenario `multi-node` desde `/api/scenario` que lanza 7 nodos cubriendo
+Por defecto usa el perfil `multi-node` (7 nodos). El dashboard también soporta
+el mismo escenario desde `/api/scenario`, cubriendo
 todas las anomalías más un nodo aleatorio (`chaos`):
 
 | Nodo | Modo | Efecto |
 |---|---|---|
 | `node-01` | `normal` | Métricas base |
 | `node-02` | `high-cpu` | CPU=95 |
-| `node-03` | `high-ram` | RAM=94 |
-| `node-04` | `high-latency` | latencia=350ms |
+| `node-03` | `high-latency` | latencia=350ms |
+| `node-04` | `high-ram` | RAM=94 |
 | `node-05` | `service-failure` | service_web="falla" |
 | `node-06` | `failed-event` | event_log="backup fallido" |
 | `node-07` | `chaos` | Cicla por todas las anomalías |
 
-También puedes lanzar perfiles simples:
+También puedes lanzar el perfil reducido `trio` o perfiles simples:
 
 ```bash
+PROFILE=trio make present
 PROFILE=cpu make present
 PROFILE=ram make present
 PROFILE=latency make present

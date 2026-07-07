@@ -150,8 +150,7 @@
         </header>
         <p class="card__hint">
           Dispara escenarios sobre los nodos. El chart, la flota y los eventos
-          reaccionan en tiempo real. Las acciones de evidencia (capturas, nmap,
-          bundle) generan artefactos en <code>artifacts/demo/</code>.
+          reaccionan en tiempo real.
         </p>
         <div class="scenario__controls" role="group" aria-label="Controles de demostración">
           <fieldset class="control-group">
@@ -163,15 +162,6 @@
             <button class="btn btn--scenario" data-action="scenario" data-scenario="service-failure" type="button">Servicio caído</button>
             <button class="btn btn--scenario" data-action="scenario" data-scenario="failed-event" type="button">Evento fallido</button>
             <button class="btn btn--scenario" data-action="scenario" data-scenario="multi-node" type="button">Multi-nodo</button>
-          </fieldset>
-          <fieldset class="control-group">
-            <legend>Evidencia</legend>
-            <button class="btn btn--action" data-action="demo-bundle" type="button">Bundle completo</button>
-            <button class="btn btn--action" data-action="screenshots" type="button">Capturas</button>
-            <button class="btn btn--action" data-action="nmap" type="button">Nmap</button>
-            <button class="btn btn--action" data-action="tshark-capture" type="button">Tshark</button>
-            <button class="btn btn--action" data-action="tests" type="button">Tests</button>
-            <button class="btn btn--action btn--danger" data-action="reset" type="button">Reset</button>
           </fieldset>
         </div>
         <div class="scenario__feedback" id="scenario-feedback" role="status" aria-live="polite"></div>
@@ -235,8 +225,8 @@
           <span class="demo-roster__title">demo</span>
           <span class="demo-chip" data-role="ok"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-01</span><span class="demo-chip__sep">·</span>normal</span>
           <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-02</span><span class="demo-chip__sep">·</span>cpu alta</span>
-          <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-03</span><span class="demo-chip__sep">·</span>ram alta</span>
-          <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-04</span><span class="demo-chip__sep">·</span>latencia alta</span>
+          <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-03</span><span class="demo-chip__sep">·</span>latencia alta</span>
+          <span class="demo-chip" data-role="warn"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-04</span><span class="demo-chip__sep">·</span>ram alta</span>
           <span class="demo-chip" data-role="error"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-05</span><span class="demo-chip__sep">·</span>servicio caído</span>
           <span class="demo-chip" data-role="error"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-06</span><span class="demo-chip__sep">·</span>evento fallido</span>
           <span class="demo-chip" data-role="error"><span class="demo-chip__dot" aria-hidden="true"></span><span class="demo-chip__id">node-07</span><span class="demo-chip__sep">·</span>caos / aleatorio</span>

@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PANEL_PORT="${1:-8080}"
-PROFILE="${2:-trio}"
+PROFILE="${2:-multi-node}"
 PYTHON_BIN="$(command -v python3 || true)"
 LOG_DIR="logs"
 SERVER_LOG="$LOG_DIR/server.log"
@@ -85,6 +85,15 @@ if ! wait_for_http "http://127.0.0.1:${PANEL_PORT}/api/state" 20; then
 fi
 
 case "$PROFILE" in
+  multi-node|fleet|seven)
+    start_client normal node-01 3.0
+    start_client high-cpu node-02 3.0
+    start_client high-latency node-03 4.0
+    start_client high-ram node-04 3.0
+    start_client service-failure node-05 3.0
+    start_client failed-event node-06 3.0
+    start_client chaos node-07 3.0
+    ;;
   trio)
     start_client normal node-01 3.0
     start_client high-cpu node-02 3.0
@@ -110,7 +119,7 @@ case "$PROFILE" in
     ;;
   *)
     echo "ERROR: perfil desconocido: $PROFILE"
-    echo "Perfiles: trio, cpu, ram, latency, service, failed-event, normal"
+    echo "Perfiles: multi-node, trio, cpu, ram, latency, service, failed-event, normal"
     exit 1
     ;;
 esac

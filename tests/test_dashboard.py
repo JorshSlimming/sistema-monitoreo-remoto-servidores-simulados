@@ -57,6 +57,7 @@ class DashboardIntegrationTests(unittest.TestCase):
         self._dashboard_url = f"http://127.0.0.1:{self._httpd.server_port}"
 
     def tearDown(self) -> None:
+        dashboard._stop_managed_clients()
         dashboard._MONITOR_CONFIG = self._old_config
         dashboard._DB_PATH = self._old_db_path
         self._httpd.shutdown()

@@ -12,13 +12,7 @@
   const STATE_PATH = "/api/state";
   // POST endpoints.
   const ACTIONS = {
-    "demo-bundle": { method: "POST", path: "/api/demo-bundle" },
     scenario: { method: "POST", path: "/api/scenario" },
-    tests: { method: "POST", path: "/api/tests" },
-    nmap: { method: "POST", path: "/api/nmap" },
-    "tshark-capture": { method: "POST", path: "/api/tshark-capture" },
-    screenshots: { method: "POST", path: "/api/screenshots" },
-    reset: { method: "POST", path: "/api/reset" },
   };
 
   const POLL_MS = 1000;
@@ -44,8 +38,8 @@
   const DEMO_ROLES = {
     "node-01": { label: "operación normal", short: "normal", tone: "ok" },
     "node-02": { label: "cpu alta",         short: "cpu alta", tone: "warn" },
-    "node-03": { label: "ram alta",         short: "ram alta", tone: "warn" },
-    "node-04": { label: "latencia alta",    short: "latencia alta", tone: "warn" },
+    "node-03": { label: "latencia alta",    short: "latencia alta", tone: "warn" },
+    "node-04": { label: "ram alta",         short: "ram alta", tone: "warn" },
     "node-05": { label: "servicio caído",   short: "servicio caído", tone: "error" },
     "node-06": { label: "evento fallido",   short: "evento fallido", tone: "error" },
     "node-07": { label: "caos / aleatorio", short: "caos / aleatorio", tone: "error" },
@@ -59,6 +53,7 @@
     { name: "node-04", color: "var(--accent)" },
     { name: "node-05", color: "var(--error)" },
     { name: "node-06", color: "var(--idle)" },
+    { name: "node-07", color: "var(--text-muted)" },
   ];
   const seriesColor = (id) => {
     let h = 0;

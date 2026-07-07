@@ -59,7 +59,7 @@ python3 -m client.tcp_client --node-id node-02 --mode high-cpu
 
 ```bash
 # Terminal 2
-python3 -m client.tcp_client --node-id node-03 --mode high-ram
+python3 -m client.tcp_client --node-id node-04 --mode high-ram
 ```
 
 **Resultado esperado:** Comando `reduce_ram` emitido por el servidor y recuperación gradual de RAM en métricas posteriores.
@@ -69,7 +69,7 @@ python3 -m client.tcp_client --node-id node-03 --mode high-ram
 ## Escenario 4 — Latencia alta
 
 ```bash
-python3 -m client.tcp_client --node-id node-01 --mode high-latency
+python3 -m client.tcp_client --node-id node-03 --mode high-latency
 ```
 
 **Resultado esperado:** Comando `fix_latency` emitido y recuperación gradual de latencia en métricas posteriores.

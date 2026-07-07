@@ -22,7 +22,7 @@ demo:
 
 present:
 	@echo "=== Iniciando modo presentación ==="
-	bash ./scripts/run_presentation.sh 8080 $${PROFILE:-trio}
+	bash ./scripts/run_presentation.sh 8080 $${PROFILE:-multi-node}
 
 client:
 	@echo "=== Lanzando cliente persistente ==="

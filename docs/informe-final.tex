@@ -555,7 +555,7 @@ conservando el contador de secuencia.
 \begin{lstlisting}[style=terminal]
 python3 -m client.tcp_client --node-id node-01 --mode normal
 python3 -m client.tcp_client --node-id node-02 --mode high-cpu
-python3 -m client.tcp_client --node-id node-04 --mode high-latency --interval 3.0
+python3 -m client.tcp_client --node-id node-03 --mode high-latency --interval 3.0
 \end{lstlisting}
 
 \subsection{Modos de simulacion}
@@ -789,9 +789,9 @@ es demostrar concurrencia y diferenciacion por nodo.
 \hline
 \texttt{node-02} & \texttt{high-cpu} & CPU alta. \\
 \hline
-\texttt{node-03} & \texttt{high-ram} & RAM alta. \\
+\texttt{node-03} & \texttt{high-latency} & Latencia alta. \\
 \hline
-\texttt{node-04} & \texttt{high-latency} & Latencia alta. \\
+\texttt{node-04} & \texttt{high-ram} & RAM alta. \\
 \hline
 \texttt{node-05} & \texttt{service-failure} & Servicio en falla. \\
 \hline

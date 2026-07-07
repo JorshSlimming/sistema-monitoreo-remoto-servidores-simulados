@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import shutil
+import atexit
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -46,6 +47,7 @@ for _d in (_ARTIFACTS_DIR, _DEMO_DIR, _STATIC_DIR, _CAPTURES_DIR, _SCREENSHOTS_D
 
 _DASHBOARD_START = time.time()
 _MONITOR_CONFIG = load_server_config()
+_MANAGED_CLIENTS: dict[str, subprocess.Popen[str]] = {}
 
 
 def _monitor_host() -> str:
@@ -149,6 +151,25 @@ def _recent_demo_nodes() -> set[str]:
         return set()
 
 
+def _prune_managed_clients() -> None:
+    """Forget dashboard-launched clients that have already exited."""
+    for node_id, proc in list(_MANAGED_CLIENTS.items()):
+        if proc.poll() is not None:
+            _MANAGED_CLIENTS.pop(node_id, None)
+
+
+def _running_managed_client_ids() -> set[str]:
+    _prune_managed_clients()
+    return set(_MANAGED_CLIENTS)
+
+
+def _stop_managed_clients() -> None:
+    """Stop background clients started by the dashboard multi-node scenario."""
+    for proc in list(_MANAGED_CLIENTS.values()):
+        _stop_process(proc)
+    _MANAGED_CLIENTS.clear()
+
+
 def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0, duration: float = 10.0) -> dict:
     """Run one or more real clients against the already-running monitor server."""
     monitor_host = _monitor_host()
@@ -162,14 +183,14 @@ def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0,
             specs = [
                 ("normal", "node-01"),
                 ("high-cpu", "node-02"),
-                ("high-ram", "node-03"),
-                ("high-latency", "node-04"),
+                ("high-latency", "node-03"),
+                ("high-ram", "node-04"),
                 ("service-failure", "node-05"),
                 ("failed-event", "node-06"),
                 ("chaos", "node-07"),
             ]
             # Skip demo node IDs that are already sending metrics.
-            active = _recent_demo_nodes()
+            active = _recent_demo_nodes() | _running_managed_client_ids()
             if active:
                 specs = [(m, nid) for m, nid in specs if nid not in active]
         else:
@@ -193,14 +214,43 @@ def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0,
                     str(interval),
                 ],
                 cwd=str(_PROJECT_ROOT),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=subprocess.DEVNULL if mode == "multi-node" else subprocess.PIPE,
+                stderr=subprocess.DEVNULL if mode == "multi-node" else subprocess.PIPE,
                 text=True,
             )
             processes.append(proc)
+            if mode == "multi-node":
+                _MANAGED_CLIENTS[client_node] = proc
+
+        if mode == "multi-node":
+            deadline = time.time() + duration
+            expected = {f"node-0{i}" for i in range(1, 8)}
+            while time.time() < deadline:
+                if expected.issubset(_recent_demo_nodes()):
+                    break
+                time.sleep(0.2)
+
+            after = _db_stats()
+            active_now = _recent_demo_nodes()
+            produced_data = any(
+                int(after.get(key, 0)) > int(before.get(key, 0))
+                for key in ("metrics", "commands", "acks")
+            )
+            success = produced_data and expected.issubset(active_now)
+            return {
+                "success": success,
+                "returncode": 0 if success else 1,
+                "stdout": "",
+                "stderr": "",
+                "returncodes": [proc.poll() for proc in processes],
+                "started_nodes": [nid for _, nid in specs],
+                "managed_nodes": sorted(_running_managed_client_ids()),
+                "active_nodes": sorted(active_now),
+                "db_before": before,
+                "db_after": after,
+            }
 
         time.sleep(duration)
-
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
         returncodes: list[int | None] = []
@@ -229,7 +279,8 @@ def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0,
         }
     except Exception as exc:
         for proc in processes:
-            _stop_process(proc)
+            if mode != "multi-node":
+                _stop_process(proc)
         return {"success": False, "returncode": -1, "stdout": "", "stderr": str(exc)}
 
 
@@ -288,6 +339,9 @@ def _stop_process(proc: subprocess.Popen[str] | None) -> None:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+
+atexit.register(_stop_managed_clients)
 
 
 def _save_artifact(artifact_type: str, label: str, details: dict) -> dict:
@@ -618,7 +672,7 @@ def _build_state_payload() -> dict:
     Designed to be cheap and bounded (last ~50-100 entries per category).
     """
     db = _db_stats()
-    metrics = _fetch_metrics(limit=200)
+    metrics = _fetch_metrics(limit=700)
     commands = _fetch_commands(limit=50)
     acks = _fetch_acks(limit=50)
 
@@ -828,6 +882,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     # ---- Per-endpoint logic ----
 
     def _handle_reset(self, body: dict | None = None) -> None:
+        _stop_managed_clients()
         db_reset = _clear_database()
         _clear_demo_artifacts()
         artifact = _save_artifact("reset", "Environment reset", {
@@ -876,6 +931,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         results: dict[str, object] = {}
 
         # 1. Reset logical state without deleting the DB file under the live server.
+        _stop_managed_clients()
         db_reset = _clear_database()
         _clear_demo_artifacts()
         results["reset"] = db_reset
@@ -1063,8 +1119,8 @@ def main() -> None:
 
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     print(f"[dashboard] listening on http://{host}:{port}")
-    print(f"[dashboard] static files → {_STATIC_DIR}")
-    print(f"[dashboard] artifacts       → {_DEMO_DIR}")
+    print(f"[dashboard] static files -> {_STATIC_DIR}")
+    print(f"[dashboard] artifacts       -> {_DEMO_DIR}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

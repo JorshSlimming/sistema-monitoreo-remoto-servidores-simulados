@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import socket
 import subprocess
 import sys
 import time
+import shutil
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -26,6 +28,11 @@ from urllib.parse import urlparse
 # Paths — relative to project root (two levels up from this file)
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from server.server_config import load_server_config
+
 _ARTIFACTS_DIR = _PROJECT_ROOT / "artifacts"
 _DEMO_DIR = _ARTIFACTS_DIR / "demo"
 _STATIC_DIR = _PROJECT_ROOT / "frontend" / "static"
@@ -38,6 +45,12 @@ for _d in (_ARTIFACTS_DIR, _DEMO_DIR, _STATIC_DIR, _CAPTURES_DIR, _SCREENSHOTS_D
     _d.mkdir(parents=True, exist_ok=True)
 
 _DASHBOARD_START = time.time()
+_MONITOR_CONFIG = load_server_config()
+
+
+def _monitor_host() -> str:
+    host = (_MONITOR_CONFIG.host or "").strip()
+    return "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +80,114 @@ def _db_stats() -> dict:
         return {"metrics": metrics, "commands": commands, "acks": acks}
     except (sqlite3.Error, FileNotFoundError) as exc:
         return {"metrics": -1, "commands": -1, "acks": -1, "error": str(exc)}
+
+
+def _clear_database() -> dict:
+    """Clear runtime tables without deleting the SQLite file under a live server."""
+    if not _DB_PATH.exists():
+        return {"success": True, "cleared": ["metrics", "commands", "acks"], "rows_before": {"metrics": 0, "commands": 0, "acks": 0}}
+    try:
+        conn = sqlite3.connect(str(_DB_PATH), timeout=5)
+        before = {
+            "metrics": conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0],
+            "commands": conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0],
+            "acks": conn.execute("SELECT COUNT(*) FROM acks").fetchone()[0],
+        }
+        conn.execute("DELETE FROM acks")
+        conn.execute("DELETE FROM commands")
+        conn.execute("DELETE FROM metrics")
+        conn.commit()
+        conn.close()
+        return {"success": True, "cleared": ["metrics", "commands", "acks"], "rows_before": before}
+    except sqlite3.Error as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def _clear_demo_artifacts() -> None:
+    for path in (_CAPTURES_DIR, _SCREENSHOTS_DIR):
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+        path.mkdir(parents=True, exist_ok=True)
+    if _DEMO_DIR.exists():
+        for item in _DEMO_DIR.glob("*.json"):
+            try:
+                item.unlink()
+            except OSError:
+                pass
+
+
+def _server_reachable(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0, duration: float = 5.0) -> dict:
+    """Run one or more real clients against the already-running monitor server."""
+    monitor_host = _monitor_host()
+    if not _server_reachable(monitor_host, _MONITOR_CONFIG.port):
+        return {"success": False, "returncode": -1, "stdout": "", "stderr": "monitor server is not reachable"}
+
+    processes: list[subprocess.Popen[str]] = []
+    try:
+        if mode == "multi-node":
+            specs = [
+                ("normal", "node-01"),
+                ("high-cpu", "node-02"),
+                ("high-latency", "node-03"),
+            ]
+        else:
+            specs = [(mode, node_id)]
+
+        for client_mode, client_node in specs:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "client.tcp_client",
+                    "--host",
+                    monitor_host,
+                    "--port",
+                    str(_MONITOR_CONFIG.port),
+                    "--node-id",
+                    client_node,
+                    "--mode",
+                    client_mode,
+                    "--interval",
+                    str(interval),
+                ],
+                cwd=str(_PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            processes.append(proc)
+
+        time.sleep(duration)
+
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        success = True
+        for proc in processes:
+            _stop_process(proc)
+            out, err = proc.communicate(timeout=2)
+            stdout_parts.append(out)
+            stderr_parts.append(err)
+            if proc.returncode not in (0, -15, None):
+                success = False
+
+        return {
+            "success": success,
+            "returncode": 0 if success else 1,
+            "stdout": "\n".join(p for p in stdout_parts if p),
+            "stderr": "\n".join(p for p in stderr_parts if p),
+        }
+    except Exception as exc:
+        for proc in processes:
+            _stop_process(proc)
+        return {"success": False, "returncode": -1, "stdout": "", "stderr": str(exc)}
 
 
 def _run_cmd(
@@ -210,9 +331,10 @@ def _build_status_payload() -> dict:
     return {
         "status": "ok",
         "server": {
-            "host": "127.0.0.1",
-            "port": int(os.environ.get("DASHBOARD_PORT", 8080)),
-            "running": True,
+            "host": _monitor_host(),
+            "listen_host": _MONITOR_CONFIG.host,
+            "port": _MONITOR_CONFIG.port,
+            "running": _server_reachable(_monitor_host(), _MONITOR_CONFIG.port),
         },
         "database": {
             "path": str(_DB_PATH.relative_to(_PROJECT_ROOT)),
@@ -248,9 +370,10 @@ def _build_artifacts_payload() -> dict:
         "generated_at": _now(),
         "project": "Sistema de monitoreo remoto",
         "server": {
-            "host": "127.0.0.1",
-            "port": 8080,
-            "running": True,
+            "host": _monitor_host(),
+            "listen_host": _MONITOR_CONFIG.host,
+            "port": _MONITOR_CONFIG.port,
+            "running": _server_reachable(_monitor_host(), _MONITOR_CONFIG.port),
         },
         "tests": {
             "timestamp": tests.get("timestamp") if tests else None,
@@ -503,12 +626,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     # ---- Per-endpoint logic ----
 
     def _handle_reset(self, body: dict | None = None) -> None:
-        result = _run_cmd(["bash", "scripts/reset_environment.sh"], timeout=15)
+        db_reset = _clear_database()
+        _clear_demo_artifacts()
         artifact = _save_artifact("reset", "Environment reset", {
-            "success": result["success"],
-            "returncode": result["returncode"],
-            "stdout": result["stdout"],
-            "stderr": result["stderr"],
+            "success": db_reset.get("success", False),
+            "returncode": 0 if db_reset.get("success") else 1,
+            "stdout": "runtime database cleared; demo artifacts removed",
+            "stderr": db_reset.get("error", ""),
+            "db_reset": db_reset,
         })
         self._send_json(artifact)
 
@@ -531,10 +656,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         node_id = (body or {}).get("node_id", "node-01")
         interval = (body or {}).get("interval", 3.0)
 
-        result = _run_cmd(
-            ["bash", "scripts/run_scenario.sh", scenario],
-            timeout=60,
-        )
+        result = _run_live_client(scenario, node_id=node_id, interval=float(interval), duration=5.0)
         artifact = _save_artifact(f"scenario_{scenario}", f"Scenario: {scenario}", {
             "scenario": scenario,
             "node_id": node_id,
@@ -551,17 +673,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """Reset → run several scenarios → collect final stats."""
         results: dict[str, object] = {}
 
-        # 1. Reset
-        r = _run_cmd(["bash", "scripts/reset_environment.sh"], timeout=15)
-        results["reset"] = {"success": r["success"], "returncode": r["returncode"]}
-        if not r["success"]:
+        # 1. Reset logical state without deleting the DB file under the live server.
+        db_reset = _clear_database()
+        _clear_demo_artifacts()
+        results["reset"] = db_reset
+        if not db_reset.get("success"):
             self._send_json(_save_artifact("demo_bundle", "Demo bundle (failed at reset)", results))
             return
 
         # 2. Run scenarios sequentially
         scenarios = ["normal", "high-cpu", "high-ram"]
         for sc in scenarios:
-            r = _run_cmd(["bash", "scripts/run_scenario.sh", sc], timeout=60)
+            r = _run_live_client(sc, node_id="node-01", interval=3.0, duration=5.0)
             results[sc] = {"success": r["success"], "returncode": r["returncode"]}
         results["scenarios_run"] = scenarios
 

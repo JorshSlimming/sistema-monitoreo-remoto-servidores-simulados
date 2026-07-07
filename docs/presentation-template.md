@@ -91,6 +91,7 @@ Secuencia sugerida:
    - aumento de la serie en el gráfico;
    - emisión de `reduce_cpu`;
    - recepción de `ack`;
+   - recuperación posterior de la métrica;
    - persistencia en SQLite.
 
 Si hay tiempo, repetir con `Multi-nodo`.
@@ -103,7 +104,7 @@ Si hay tiempo, repetir con `Multi-nodo`.
 python3 -m unittest discover -s tests -v
 ```
 
-- **Resultado actual:** 18 pruebas, todas pasan.
+- **Resultado actual:** 23 pruebas, todas pasan.
 - Cobertura: cliente, servidor, persistencia, reglas de anomalía.
 - Insertar captura real de la ejecución.
 

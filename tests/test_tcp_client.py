@@ -3,7 +3,14 @@
 import json
 import unittest
 
-from client.tcp_client import ANOMALY_MODES, build_metric, decode_message, encode_message
+from client.tcp_client import (
+    ANOMALY_MODES,
+    apply_command,
+    build_initial_state,
+    build_metric,
+    decode_message,
+    encode_message,
+)
 
 
 class BuildMetricTests(unittest.TestCase):
@@ -61,6 +68,15 @@ class BuildMetricTests(unittest.TestCase):
         m2 = build_metric("node-01", 11, "normal")
         self.assertEqual(m1["seq"], 10)
         self.assertEqual(m2["seq"], 11)
+
+    def test_command_mitigation_changes_next_metric(self) -> None:
+        state = build_initial_state("high-cpu")
+        self.assertAlmostEqual(build_metric("node-01", 0, "high-cpu", state=state)["cpu"], 95.0)
+
+        apply_command(state, "reduce_cpu")
+        metric = build_metric("node-01", 1, "high-cpu", state=state)
+
+        self.assertAlmostEqual(metric["cpu"], 35.0)
 
 
 class EncodeDecodeTests(unittest.TestCase):

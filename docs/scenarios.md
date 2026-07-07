@@ -53,10 +53,11 @@ python3 -m client.tcp_client --node-id node-01 --mode high-cpu
 [metric] node-01: {'type': 'metric', 'node_id': 'node-01', 'cpu': 95.0, ...}
 [command] node-01: {'type': 'command', 'command_id': 1, 'action': 'reduce_cpu', 'reason': 'cpu above 90'}
 ```
-El cliente recibe el comando y responde con un ACK:
+El cliente recibe el comando, aplica la mitigación simulada y responde con un ACK:
 ```
 [client] ack sent for command 1: reduce_cpu
 ```
+En las métricas siguientes, la CPU vuelve al valor normal simulado.
 
 ---
 
@@ -185,7 +186,7 @@ sqlite3 data/monitor.db "SELECT * FROM acks;"
 python3 -m unittest discover -s tests -v
 ```
 
-Ejecuta 18 pruebas que cubren:
+Ejecuta 23 pruebas que cubren:
 - Construcción de métricas en todos los modos
 - Codificación/decodificación de mensajes
 - Estados del servidor (timeout, confirmación)

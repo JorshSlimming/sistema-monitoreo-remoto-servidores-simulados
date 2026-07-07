@@ -13,7 +13,7 @@ Sistema completo con:
 | Autenticación por token estático | Implementado |
 | Detección de anomalías y envío de comandos | Implementado |
 | Persistencia SQLite (métricas, comandos, ACKs) | Implementado |
-| Pruebas unitarias y de integración | 18 pruebas — pasan |
+| Pruebas unitarias y de integración | 23 pruebas — pasan |
 | Captura de tráfico con Wireshark | Documentado |
 | Escaneo con Nmap | Documentado |
 
@@ -104,7 +104,7 @@ Modos disponibles:
 | Modo | Efecto |
 |---|---|
 | `normal` | Métricas base (CPU=35, RAM=45, latencia=40ms) |
-| `high-cpu` | CPU=95 → dispara comando `reduce_cpu` |
+| `high-cpu` | CPU=95 → dispara `reduce_cpu`; luego el cliente vuelve a CPU normal |
 | `high-ram` | RAM=94 → dispara comando `reduce_ram` |
 | `high-latency` | latencia=350ms → dispara comando `fix_latency` |
 | `service-failure` | service_web="falla" → dispara `restart_service` |
@@ -136,7 +136,7 @@ SQLite en `data/monitor.db` (configurable en `configs/server_config.json` o vari
 
 Tablas:
 - `metrics` — métricas recibidas con timestamp
-- `commands` — comandos emitidos con estado (pending / timed_out / confirmed)
+- `commands` — comandos emitidos con estado (pending / timed_out / confirmed / failed)
 - `acks` — confirmaciones de clientes
 
 ## Evidencia para la entrega

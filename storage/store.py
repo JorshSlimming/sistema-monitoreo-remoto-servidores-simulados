@@ -102,11 +102,16 @@ class DatabaseStore:
         status: str,
     ) -> None:
         now = _now()
+        command_status = "confirmed" if status == "applied" else "failed"
         with self._lock:
             self._conn.execute(
                 "INSERT INTO acks (command_id, node_id, status, received_at) "
                 "VALUES (?, ?, ?, ?)",
                 (command_id, node_id, status, now),
+            )
+            self._conn.execute(
+                "UPDATE commands SET status = ? WHERE command_id = ? AND node_id = ?",
+                (command_status, command_id, node_id),
             )
             self._conn.commit()
 
@@ -126,6 +131,14 @@ class DatabaseStore:
     def _count_acks(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM acks").fetchone()[0]
+
+    def _command_status(self, command_id: int) -> str | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM commands WHERE command_id = ?",
+                (command_id,),
+            ).fetchone()
+            return None if row is None else row[0]
 
     def __enter__(self) -> "DatabaseStore":
         return self

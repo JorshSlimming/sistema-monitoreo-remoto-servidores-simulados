@@ -30,21 +30,47 @@ _BASE_METRIC: dict[str, Any] = {
 }
 
 
-def build_metric(node_id: str, seq: int, mode: str) -> dict[str, Any]:
+def build_initial_state(mode: str) -> dict[str, Any]:
+    """Return mutable simulated node state for the selected initial mode."""
+    state = dict(_BASE_METRIC)
+    if mode in ANOMALY_MODES:
+        state.update(ANOMALY_MODES[mode])
+    return state
+
+
+def apply_command(state: dict[str, Any], action: str) -> None:
+    """Apply a server mitigation command to the simulated local state."""
+    if action == "reduce_cpu":
+        state["cpu"] = _BASE_METRIC["cpu"]
+    elif action == "reduce_ram":
+        state["ram"] = _BASE_METRIC["ram"]
+    elif action == "fix_latency":
+        state["latency_ms"] = _BASE_METRIC["latency_ms"]
+    elif action == "restart_service":
+        state["service_web"] = _BASE_METRIC["service_web"]
+    elif action == "normalize_node":
+        state.update(_BASE_METRIC)
+
+
+def build_metric(
+    node_id: str,
+    seq: int,
+    mode: str,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build a metric dict for *node_id* with sequence *seq* in *mode*."""
     token = get_token(node_id)
     if token is None:
         print(f"[client] WARNING: unknown node_id {node_id}, using fallback token")
         token = "unknown"
+    metric_state = state if state is not None else build_initial_state(mode)
     metric: dict[str, Any] = {
         "type": "metric",
         "node_id": node_id,
         "seq": seq,
-        **_BASE_METRIC,
+        **metric_state,
         "token": token,
     }
-    if mode in ANOMALY_MODES:
-        metric.update(ANOMALY_MODES[mode])
     return metric
 
 
@@ -61,7 +87,7 @@ def decode_message(raw_line: bytes) -> dict[str, Any]:
     return message
 
 
-def _drain_socket(sock: socket.socket, node_id: str) -> None:
+def _drain_socket(sock: socket.socket, node_id: str, state: dict[str, Any]) -> None:
     """Read and process all pending messages from the server."""
     try:
         while True:
@@ -78,6 +104,8 @@ def _drain_socket(sock: socket.socket, node_id: str) -> None:
                     continue
                 msg_type = message.get("type")
                 if msg_type == "command":
+                    action = str(message.get("action", ""))
+                    apply_command(state, action)
                     ack = {
                         "type": "ack",
                         "node_id": node_id,
@@ -88,7 +116,7 @@ def _drain_socket(sock: socket.socket, node_id: str) -> None:
                     sock.sendall(encode_message(ack))
                     print(
                         f"[client] ack sent for command {message['command_id']}: "
-                        f"{message.get('action', '?')}"
+                        f"{action or '?'}"
                     )
                 elif msg_type == "error":
                     print(f"[client] server error: {message}")
@@ -114,17 +142,18 @@ def run_client(
     """
     print(f"[client] starting as {node_id} (mode={mode}, interval={interval}s)")
     seq = 0
+    state = build_initial_state(mode)
     while True:
         try:
             with socket.create_connection((host, port), timeout=5) as sock:
                 sock.settimeout(1.0)  # short drain timeout
                 print(f"[client] connected to {host}:{port}")
                 while True:
-                    metric = build_metric(node_id, seq, mode)
+                    metric = build_metric(node_id, seq, mode, state=state)
                     sock.sendall(encode_message(metric))
                     print(f"[client] sent metric seq={seq} mode={mode}")
                     seq += 1
-                    _drain_socket(sock, node_id)
+                    _drain_socket(sock, node_id, state)
                     time.sleep(interval)
         except (ConnectionRefusedError, ConnectionResetError, OSError, socket.timeout) as exc:
             print(f"[client] connection lost ({exc}); reconnecting in 5s...")

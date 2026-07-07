@@ -25,7 +25,8 @@ class ServerState:
         self._nodes: dict[str, NodeState] = {}
         self._lock = Lock()
         self.sent_commands: dict[int, ActionData] = {}
-        self.command_timeout = 20  # segundos
+        self.command_timeout = 20  # pending command timeout (segundos)
+        self.cooldown_seconds = 12  # anti-spam: skip same action within cooldown
 
     def mark_connected(self, node_id: str, address: str, seq: int | None = None) -> None:
         with self._lock:
@@ -78,17 +79,40 @@ class ServerState:
     def is_action_pending(self, action: str, node_id: str) -> bool:
         with self._lock:
             now = time.time()
-            for cid, cmd in self.sent_commands.items():
+            for cid, cmd in list(self.sent_commands.items()):
                 if cmd.action != action or cmd.node_id != node_id:
                     continue
-                if cmd.status != "pending":
-                    continue
-                if now - cmd.timestamp > self.command_timeout:
-                    print(f"[warning] Command {cid} ({action}) timed out after {self.command_timeout}s. Expiring.")
-                    cmd.status = "timed_out"
-                    continue
-                return True
+                if cmd.status == "pending":
+                    if now - cmd.timestamp > self.command_timeout:
+                        print(
+                            f"[warning] Command {cid} ({action}) timed out "
+                            f"after {self.command_timeout}s. Expiring."
+                        )
+                        cmd.status = "timed_out"
+                        continue
+                    return True
+                # Cooldown: recently confirmed commands suppress duplicates
+                if cmd.status == "confirmed" and now - cmd.timestamp < self.cooldown_seconds:
+                    print(
+                        f"[cooldown] {action} for {node_id} was confirmed "
+                        f"{now - cmd.timestamp:.0f}s ago, suppressing"
+                    )
+                    return True
             return False
+
+    def cleanup_expired(self, max_age: float = 60.0) -> int:
+        """Remove entries older than *max_age* seconds from sent_commands.
+        Returns the number removed."""
+        with self._lock:
+            now = time.time()
+            expired = [
+                cid
+                for cid, cmd in self.sent_commands.items()
+                if now - cmd.timestamp > max_age
+            ]
+            for cid in expired:
+                del self.sent_commands[cid]
+            return len(expired)
 
     def confirm_command(self, cid: int) -> bool:
         with self._lock:

@@ -124,7 +124,7 @@ def _server_reachable(host: str, port: int) -> bool:
         return False
 
 
-def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0, duration: float = 5.0) -> dict:
+def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0, duration: float = 10.0) -> dict:
     """Run one or more real clients against the already-running monitor server."""
     monitor_host = _monitor_host()
     if not _server_reachable(monitor_host, _MONITOR_CONFIG.port):
@@ -408,21 +408,63 @@ def _fetch_metrics(limit: int = 200, nodes: tuple[str, ...] | None = None) -> li
     """Return recent metrics from SQLite, newest first.
 
     Each row is a flat dict ready for charting.
+    Handles both legacy (pre-migration) and current schemas.
     """
     if not _DB_PATH.exists():
         return []
     try:
         conn = sqlite3.connect(str(_DB_PATH), timeout=2)
-        query = "SELECT node_id, seq, cpu, ram, latency_ms, service_web, event_log, received_at FROM metrics"
-        params: list[str] = []
-        if nodes:
-            placeholders = ",".join("?" for _ in nodes)
-            query += f" WHERE node_id IN ({placeholders})"
-            params.extend(nodes)
-        query += " ORDER BY received_at DESC LIMIT ?"
-        params.append(str(limit))
-        rows = conn.execute(query, params).fetchall()
+        # Try with enriched columns first; fall back to legacy on error
+        try:
+            query = (
+                "SELECT node_id, seq, cpu, ram, latency_ms, service_web, event_log, "
+                "received_at, scenario, anomaly_active, mitigation_active, mitigation_type, "
+                "last_command FROM metrics"
+            )
+            params: list[str] = []
+            if nodes:
+                placeholders = ",".join("?" for _ in nodes)
+                query += f" WHERE node_id IN ({placeholders})"
+                params.extend(nodes)
+            query += " ORDER BY received_at DESC LIMIT ?"
+            params.append(str(limit))
+            rows = conn.execute(query, params).fetchall()
+            enriched = True
+        except sqlite3.OperationalError:
+            # Legacy schema — no enriched columns
+            query = (
+                "SELECT node_id, seq, cpu, ram, latency_ms, service_web, event_log, "
+                "received_at FROM metrics"
+            )
+            params = []
+            if nodes:
+                placeholders = ",".join("?" for _ in nodes)
+                query += f" WHERE node_id IN ({placeholders})"
+                params.extend(nodes)
+            query += " ORDER BY received_at DESC LIMIT ?"
+            params.append(str(limit))
+            rows = conn.execute(query, params).fetchall()
+            enriched = False
         conn.close()
+        if enriched:
+            return [
+                {
+                    "node_id": row[0],
+                    "seq": row[1],
+                    "cpu": row[2],
+                    "ram": row[3],
+                    "latency_ms": row[4],
+                    "service_web": row[5],
+                    "event_log": row[6],
+                    "received_at": row[7],
+                    "scenario": row[8] or "",
+                    "anomaly_active": bool(row[9]) if row[9] is not None else True,
+                    "mitigation_active": bool(row[10]) if row[10] is not None else False,
+                    "mitigation_type": row[11] or "",
+                    "last_command": row[12] or "",
+                }
+                for row in rows
+            ]
         return [
             {
                 "node_id": row[0],
@@ -433,6 +475,11 @@ def _fetch_metrics(limit: int = 200, nodes: tuple[str, ...] | None = None) -> li
                 "service_web": row[5],
                 "event_log": row[6],
                 "received_at": row[7],
+                "scenario": "",
+                "anomaly_active": True,
+                "mitigation_active": False,
+                "mitigation_type": "",
+                "last_command": "",
             }
             for row in rows
         ]
@@ -518,6 +565,116 @@ def _tail_log(source: str, max_lines: int = 200) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# /api/state — single-source-of-truth payload
+# ---------------------------------------------------------------------------
+
+def _build_state_payload() -> dict:
+    """Build a comprehensive state snapshot from the SQLite database.
+
+    This is the single source of truth for the frontend dashboard.
+    Designed to be cheap and bounded (last ~50-100 entries per category).
+    """
+    db = _db_stats()
+    metrics = _fetch_metrics(limit=200)
+    commands = _fetch_commands(limit=50)
+    acks = _fetch_acks(limit=50)
+
+    total_metrics = db.get("metrics", 0)
+    total_commands = db.get("commands", 0)
+    total_acks = db.get("acks", 0)
+
+    # Per-node latest state + recent series (chronological)
+    nodes: dict[str, dict] = {}
+    series: dict[str, list[dict]] = {}
+
+    # _fetch_metrics returns newest-first; reverse for chronological series
+    for m in reversed(metrics):
+        nid = m["node_id"]
+        staleness_seconds = None
+        try:
+            staleness_seconds = round(
+                max(0.0, datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(m["received_at"]).timestamp()),
+                1,
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+        nodes[nid] = {
+            "last_seen": m["received_at"],
+            "staleness_seconds": staleness_seconds,
+            "cpu": m["cpu"],
+            "ram": m["ram"],
+            "latency_ms": m["latency_ms"],
+            "service_web": m["service_web"],
+            "scenario": m.get("scenario", ""),
+            "anomaly_active": m.get("anomaly_active", True),
+            "mitigation_active": m.get("mitigation_active", False),
+            "mitigation_type": m.get("mitigation_type", "") or None,
+            "last_command": m.get("last_command", "") or None,
+        }
+        series.setdefault(nid, []).append(
+            {
+                "seq": m["seq"],
+                "cpu": m["cpu"],
+                "ram": m["ram"],
+                "latency_ms": m["latency_ms"],
+                "service_web": m["service_web"],
+                "received_at": m["received_at"],
+            }
+        )
+
+    # Limit series per node
+    for nid in series:
+        series[nid] = series[nid][-100:]
+
+    # Merged event stream
+    events: list[dict] = []
+    for c in commands:
+        events.append(
+            {
+                "type": "command",
+                "command_id": c["command_id"],
+                "action": c["action"],
+                "reason": c["reason"],
+                "node_id": c["node_id"],
+                "status": c["status"],
+                "timestamp": c["issued_at"],
+            }
+        )
+    for a in acks:
+        events.append(
+            {
+                "type": "ack",
+                "command_id": a["command_id"],
+                "node_id": a["node_id"],
+                "status": a["status"],
+                "timestamp": a["received_at"],
+            }
+        )
+    events.sort(key=lambda e: str(e.get("timestamp", "")), reverse=True)
+
+    active_nodes = list(nodes.keys())
+
+    return {
+        "updated_at": _now(),
+        "server": {
+            "running": _server_reachable(_monitor_host(), _MONITOR_CONFIG.port),
+            "host": _monitor_host(),
+            "port": _MONITOR_CONFIG.port,
+            "metrics_total": total_metrics,
+            "commands_total": total_commands,
+            "acks_total": total_acks,
+            "active_nodes": active_nodes,
+        },
+        "nodes": nodes,
+        "series": series,
+        "commands": commands[:50],
+        "acks": acks[:50],
+        "events": events[:50],
+        "logs": _tail_log("all", max_lines=20),
+    }
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
@@ -598,6 +755,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 source = "all"
             logs = _tail_log(source, max_lines=max_lines)
             self._send_json({"count": len(logs), "logs": logs})
+        elif path == "/api/state":
+            self._send_json(_build_state_payload())
         else:
             super().do_GET()
 
@@ -656,7 +815,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         node_id = (body or {}).get("node_id", "node-01")
         interval = (body or {}).get("interval", 3.0)
 
-        result = _run_live_client(scenario, node_id=node_id, interval=float(interval), duration=5.0)
+        result = _run_live_client(scenario, node_id=node_id, interval=float(interval), duration=10.0)
         artifact = _save_artifact(f"scenario_{scenario}", f"Scenario: {scenario}", {
             "scenario": scenario,
             "node_id": node_id,
@@ -684,7 +843,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 2. Run scenarios sequentially
         scenarios = ["normal", "high-cpu", "high-ram"]
         for sc in scenarios:
-            r = _run_live_client(sc, node_id="node-01", interval=3.0, duration=5.0)
+            r = _run_live_client(sc, node_id="node-01", interval=3.0, duration=10.0)
             results[sc] = {"success": r["success"], "returncode": r["returncode"]}
         results["scenarios_run"] = scenarios
 

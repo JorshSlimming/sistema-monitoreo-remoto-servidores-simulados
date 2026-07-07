@@ -1,9 +1,20 @@
 """Unit tests for client.tcp_client."""
 
 import json
+import time
 import unittest
 
-from client.tcp_client import ANOMALY_MODES, build_metric, decode_message, encode_message
+from client.tcp_client import (
+    ANOMALY_MODES,
+    _BASE_METRIC,
+    PROGRESSIVE_FACTOR,
+    ClientState,
+    _apply_command,
+    _progressive_step,
+    build_metric,
+    decode_message,
+    encode_message,
+)
 
 
 class BuildMetricTests(unittest.TestCase):
@@ -85,6 +96,152 @@ class EncodeDecodeTests(unittest.TestCase):
     def test_decode_invalid_json_raises(self) -> None:
         with self.assertRaises(json.JSONDecodeError):
             decode_message(b"{bad json}")
+
+
+class ClientStateTests(unittest.TestCase):
+    """ClientState dataclass and command application."""
+
+    def test_default_state(self) -> None:
+        s = ClientState(mode="high-cpu")
+        self.assertEqual(s.mode, "high-cpu")
+        self.assertTrue(s.anomaly_active)
+        self.assertFalse(s.mitigation_active)
+        self.assertIsNone(s.mitigation_type)
+        self.assertIsNone(s.cpu)
+
+    def test_snapshot_returns_copy(self) -> None:
+        s = ClientState(mode="normal", cpu=95.0)
+        snap = s.snapshot()
+        self.assertEqual(snap["cpu"], 95.0)
+        s.cpu = 50.0
+        self.assertEqual(snap["cpu"], 95.0)  # unchanged
+
+    def test_apply_reduce_cpu_sets_cpu(self) -> None:
+        s = ClientState(mode="high-cpu")
+        _apply_command("reduce_cpu", s)
+        self.assertTrue(s.mitigation_active)
+        self.assertEqual(s.mitigation_type, "reduce_cpu")
+        self.assertIsNotNone(s.cpu)
+        # Should be initialized to the anomaly value
+        self.assertAlmostEqual(s.cpu, ANOMALY_MODES["high-cpu"]["cpu"])
+
+    def test_apply_reduce_ram_sets_ram(self) -> None:
+        s = ClientState(mode="high-ram")
+        _apply_command("reduce_ram", s)
+        self.assertIsNotNone(s.ram)
+        self.assertAlmostEqual(s.ram, ANOMALY_MODES["high-ram"]["ram"])
+
+    def test_apply_fix_latency_sets_latency(self) -> None:
+        s = ClientState(mode="high-latency")
+        _apply_command("fix_latency", s)
+        self.assertIsNotNone(s.latency_ms)
+        self.assertEqual(s.latency_ms, ANOMALY_MODES["high-latency"]["latency_ms"])
+
+    def test_apply_restart_service_restores_service(self) -> None:
+        s = ClientState(mode="service-failure")
+        self.assertEqual(s.service_web, None)  # defaults to None
+        _apply_command("restart_service", s)
+        self.assertEqual(s.service_web, "ok")
+
+    def test_apply_normalize_node_clears_all(self) -> None:
+        s = ClientState(mode="high-cpu", cpu=95.0, ram=80.0, mitigation_active=True)
+        _apply_command("normalize_node", s)
+        self.assertFalse(s.anomaly_active)
+        self.assertIsNone(s.cpu)
+        self.assertIsNone(s.ram)
+        self.assertIsNone(s.latency_ms)
+        self.assertEqual(s.service_web, "ok")
+        self.assertEqual(s.event_log, "normal")
+        self.assertTrue(s.mitigation_active)  # Still active until step clears it
+
+    def test_apply_returns_before_snapshot(self) -> None:
+        s = ClientState(mode="high-cpu")
+        before = _apply_command("normalize_node", s)
+        self.assertTrue(before["anomaly_active"])
+        self.assertFalse(s.anomaly_active)
+
+
+class ProgressiveMitigationTests(unittest.TestCase):
+    """Progressive recovery ticks move values toward baseline."""
+
+    def test_progressive_tick_moves_toward_target(self) -> None:
+        from client.tcp_client import _progressive_tick
+
+        result = _progressive_tick(95.0, 35.0)
+        expected = 95.0 + (35.0 - 95.0) * PROGRESSIVE_FACTOR
+        self.assertAlmostEqual(result, expected)
+
+    def test_progressive_step_reduces_cpu(self) -> None:
+        s = ClientState(mode="high-cpu", cpu=95.0)
+        _progressive_step(s)
+        expected = 95.0 + (35.0 - 95.0) * PROGRESSIVE_FACTOR
+        self.assertAlmostEqual(s.cpu, expected)  # type: ignore[arg-type]
+
+    def test_progressive_step_clears_when_close(self) -> None:
+        s = ClientState(
+            mode="high-cpu", cpu=_BASE_METRIC["cpu"] + 0.5  # within 1.0
+        )
+        _progressive_step(s)
+        self.assertIsNone(s.cpu)
+
+    def test_progressive_step_clears_mitigation_when_done(self) -> None:
+        s = ClientState(
+            mode="high-cpu",
+            cpu=_BASE_METRIC["cpu"] + 0.5,
+            mitigation_active=True,
+            mitigation_type="reduce_cpu",
+        )
+        _progressive_step(s)
+        self.assertIsNone(s.cpu)
+        self.assertFalse(s.mitigation_active)
+        self.assertIsNone(s.mitigation_type)
+
+    def test_multiple_steps_reach_baseline(self) -> None:
+        s = ClientState(mode="high-cpu")
+        _apply_command("reduce_cpu", s)
+        initial_cpu = s.cpu
+        self.assertIsNotNone(initial_cpu)
+        for _ in range(10):
+            _progressive_step(s)
+            if s.cpu is None:
+                break
+        self.assertIsNone(s.cpu)
+
+
+class BuildMetricEnrichmentTests(unittest.TestCase):
+    """build_metric with ClientState adds enrichment fields and applies overrides."""
+
+    def test_no_state_returns_basic_metric(self) -> None:
+        metric = build_metric("node-01", 0, "normal")
+        self.assertNotIn("scenario", metric)
+        self.assertNotIn("mitigation_active", metric)
+
+    def test_with_state_adds_enrichment_fields(self) -> None:
+        s = ClientState(mode="high-cpu")
+        metric = build_metric("node-01", 0, "high-cpu", state=s)
+        self.assertIn("scenario", metric)
+        self.assertEqual(metric["scenario"], "high-cpu")
+        self.assertIn("anomaly_active", metric)
+        self.assertIn("mitigation_active", metric)
+
+    def test_mitigation_overrides_cpu(self) -> None:
+        s = ClientState(mode="high-cpu", cpu=60.0, mitigation_active=True)
+        metric = build_metric("node-01", 0, "high-cpu", state=s)
+        self.assertAlmostEqual(metric["cpu"], 60.0)
+
+    def test_anomaly_inactive_uses_base_values(self) -> None:
+        s = ClientState(mode="high-cpu", anomaly_active=False)
+        metric = build_metric("node-01", 0, "high-cpu", state=s)
+        # anomaly overlay skipped → base value
+        self.assertAlmostEqual(metric["cpu"], _BASE_METRIC["cpu"])
+
+    def test_normalize_clears_completely(self) -> None:
+        s = ClientState(mode="high-cpu")
+        _apply_command("normalize_node", s)
+        metric = build_metric("node-01", 0, "high-cpu", state=s)
+        self.assertAlmostEqual(metric["cpu"], _BASE_METRIC["cpu"])
+        self.assertEqual(metric["service_web"], _BASE_METRIC["service_web"])
+        self.assertEqual(metric["event_log"], _BASE_METRIC["event_log"])
 
 
 if __name__ == "__main__":

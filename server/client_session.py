@@ -95,12 +95,21 @@ class ClientSession:
             return
         self.state.mark_connected(self.node_id, peer, seq)
         self.state.mark_seen(self.node_id, seq)
+        if seq % 10 == 0:
+            self.state.cleanup_expired()
 
         if not (metrics := self._extract_metric(metric)):
             return
         cpu,ram,latency_ms,service_web,event_log = metrics
         if self.store is not None and self.node_id is not None:
-            self.store.save_metric(self.node_id, seq, cpu, ram, latency_ms, service_web, event_log)
+            self.store.save_metric(
+                self.node_id, seq, cpu, ram, latency_ms, service_web, event_log,
+                scenario=str(metric.get("scenario", "")),
+                anomaly_active=bool(metric.get("anomaly_active", True)),
+                mitigation_active=bool(metric.get("mitigation_active", False)),
+                mitigation_type=str(metric.get("mitigation_type", "")),
+                last_command=str(metric.get("last_command", "")),
+            )
         self._send_orders(cpu,ram,latency_ms,service_web,event_log)
         print(f"[metric] {self.node_id}: {metric}")
 
@@ -120,6 +129,7 @@ class ClientSession:
         self.state.confirm_command(cid)
         if self.store is not None and self.node_id is not None:
             self.store.save_ack(cid, self.node_id, status)
+            self.store.update_command_status(cid, "confirmed")
         print(f"[ack] {ack}")
 
     def _extract_metric(self, metric: dict[str,Any]) -> tuple[float,float,float,str,str | None] | None:

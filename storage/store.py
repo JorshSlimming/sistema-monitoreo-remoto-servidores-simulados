@@ -38,6 +38,25 @@ CREATE TABLE IF NOT EXISTS acks (
 );
 """
 
+# ponytail: additive columns; safe to run against existing databases
+_EXTRA_COLUMNS = [
+    ("scenario", "TEXT", "''"),
+    ("anomaly_active", "INTEGER", "1"),
+    ("mitigation_active", "INTEGER", "0"),
+    ("mitigation_type", "TEXT", "''"),
+    ("last_command", "TEXT", "''"),
+]
+
+
+def _migrate_metrics_schema(conn: sqlite3.Connection) -> None:
+    """Add enrichment columns to ``metrics`` if they do not exist yet."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(metrics)")}
+    for col_name, col_type, default in _EXTRA_COLUMNS:
+        if col_name not in existing:
+            conn.execute(
+                f"ALTER TABLE metrics ADD COLUMN {col_name} {col_type} DEFAULT {default}"
+            )
+
 
 class DatabaseStore:
     """Thread-safe SQLite store for the monitoring server.
@@ -54,6 +73,7 @@ class DatabaseStore:
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA_SQL)
+        _migrate_metrics_schema(self._conn)
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -69,13 +89,34 @@ class DatabaseStore:
         latency_ms: float,
         service_web: str,
         event_log: str | None = None,
+        scenario: str = "",
+        anomaly_active: bool = True,
+        mitigation_active: bool = False,
+        mitigation_type: str = "",
+        last_command: str = "",
     ) -> None:
         now = _now()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO metrics (node_id, seq, cpu, ram, latency_ms, service_web, event_log, received_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (node_id, seq, cpu, ram, latency_ms, service_web, event_log, now),
+                "INSERT INTO metrics "
+                "(node_id, seq, cpu, ram, latency_ms, service_web, event_log, received_at, "
+                "scenario, anomaly_active, mitigation_active, mitigation_type, last_command) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    node_id,
+                    seq,
+                    cpu,
+                    ram,
+                    latency_ms,
+                    service_web,
+                    event_log,
+                    now,
+                    scenario,
+                    int(anomaly_active),
+                    int(mitigation_active),
+                    mitigation_type,
+                    last_command,
+                ),
             )
             self._conn.commit()
 
@@ -107,6 +148,15 @@ class DatabaseStore:
                 "INSERT INTO acks (command_id, node_id, status, received_at) "
                 "VALUES (?, ?, ?, ?)",
                 (command_id, node_id, status, now),
+            )
+            self._conn.commit()
+
+    def update_command_status(self, command_id: int, status: str) -> None:
+        """Update the status of a previously persisted command."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE commands SET status = ? WHERE command_id = ?",
+                (status, command_id),
             )
             self._conn.commit()
 

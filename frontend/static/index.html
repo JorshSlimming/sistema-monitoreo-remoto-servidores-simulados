@@ -46,6 +46,83 @@
     </header>
 
     <main id="contenido" class="layout">
+      <!-- Guía rápida: cadena causal detección → comando → ACK → recuperación -->
+      <section class="howto" aria-labelledby="howto-titulo">
+        <header class="howto__head">
+          <div>
+            <span class="howto__eyebrow">guía rápida</span>
+            <h2 id="howto-titulo">Cómo leer este panel</h2>
+            <p class="howto__lede">
+              El sistema sigue cuatro pasos en vivo. Mira cómo se enciende cada
+              eslabón al disparar un escenario arriba.
+            </p>
+          </div>
+          <p class="howto__summary" id="howto-summary" aria-live="polite">
+            Esperando primera anomalía…
+          </p>
+        </header>
+        <ol class="howto__chain" id="howto-chain" aria-live="polite">
+          <li class="howto__step" data-step="detection">
+            <span class="howto__num" aria-hidden="true">1</span>
+            <div class="howto__body">
+              <h3 class="howto__label">Detección</h3>
+              <p class="howto__desc">
+                El nodo publica <strong>CPU</strong>, <strong>RAM</strong> y
+                <strong>latencia</strong>. Si una métrica cruza el umbral, se
+                marca una <strong>anomalía</strong>.
+              </p>
+            </div>
+            <span class="howto__state" data-state="pending"
+              ><span class="howto__state-dot" aria-hidden="true"></span
+              ><span class="howto__state-label">en espera</span></span
+            >
+          </li>
+          <li class="howto__step" data-step="command">
+            <span class="howto__num" aria-hidden="true">2</span>
+            <div class="howto__body">
+              <h3 class="howto__label">Comando</h3>
+              <p class="howto__desc">
+                El servidor detecta la anomalía y empuja una
+                <strong>acción correctiva</strong> al nodo afectado
+                (por ejemplo, <code>restart_service</code>).
+              </p>
+            </div>
+            <span class="howto__state" data-state="pending"
+              ><span class="howto__state-dot" aria-hidden="true"></span
+              ><span class="howto__state-label">en espera</span></span
+            >
+          </li>
+          <li class="howto__step" data-step="ack">
+            <span class="howto__num" aria-hidden="true">3</span>
+            <div class="howto__body">
+              <h3 class="howto__label">ACK</h3>
+              <p class="howto__desc">
+                El nodo recibe el comando y responde con un
+                <strong>acuse de recibo</strong> confirmando que lo ejecutó.
+              </p>
+            </div>
+            <span class="howto__state" data-state="pending"
+              ><span class="howto__state-dot" aria-hidden="true"></span
+              ><span class="howto__state-label">en espera</span></span
+            >
+          </li>
+          <li class="howto__step" data-step="recovery">
+            <span class="howto__num" aria-hidden="true">4</span>
+            <div class="howto__body">
+              <h3 class="howto__label">Recuperación</h3>
+              <p class="howto__desc">
+                Las métricas vuelven a su rango normal y la
+                <strong>anomalía se cierra</strong>.
+              </p>
+            </div>
+            <span class="howto__state" data-state="pending"
+              ><span class="howto__state-dot" aria-hidden="true"></span
+              ><span class="howto__state-label">en espera</span></span
+            >
+          </li>
+        </ol>
+      </section>
+
       <!-- Escenario activo -->
       <section class="card scenario" aria-labelledby="scenario-titulo">
         <header class="card__header scenario__head">
@@ -94,6 +171,11 @@
           <div>
             <span class="card__eyebrow">tiempo real</span>
             <h2 id="chart-titulo">Actividad del sistema</h2>
+            <p class="card__hint chart__hint">
+              Una línea por nodo. La línea punteada ámbar marca el umbral de
+              aviso; la roja, el umbral de error. El punto brillante al final
+              es el último valor en vivo.
+            </p>
           </div>
           <div class="chart__controls" role="tablist" aria-label="Métrica del chart">
             <button class="seg" data-metric="cpu" aria-selected="true" role="tab" type="button">CPU</button>
@@ -132,6 +214,29 @@
             <h2 id="nodes-titulo">Métricas por nodo</h2>
             <span class="card__hint" id="nodes-hint">—</span>
           </header>
+          <p class="legend-inline" id="nodes-legend">
+            <strong>Estados:</strong>
+            <span class="pill pill--mini" data-state="ok"
+              ><span class="pill__dot" aria-hidden="true"></span
+              ><span class="pill__label">en línea</span></span
+            >
+            datos al día (&lt; 5 s)
+            <span class="pill pill--mini" data-state="warn"
+              ><span class="pill__dot" aria-hidden="true"></span
+              ><span class="pill__label">sin actualización reciente</span></span
+            >
+            entre 5 y 15 s
+            <span class="pill pill--mini" data-state="error"
+              ><span class="pill__dot" aria-hidden="true"></span
+              ><span class="pill__label">sin señal</span></span
+            >
+            más de 15 s sin métricas
+            <span class="pill pill--mini" data-state="error"
+              ><span class="pill__dot" aria-hidden="true"></span
+              ><span class="pill__label">web · falla</span></span
+            >
+            servicio web caído
+          </p>
           <div class="node-grid" id="node-grid"></div>
           <p class="empty" id="nodes-empty" hidden>
             Aún no hay métricas. Inicia el servidor y al menos un cliente para
@@ -141,9 +246,22 @@
 
         <section class="card events" aria-labelledby="events-titulo">
           <header class="card__header">
-            <h2 id="events-titulo">Comandos y acks</h2>
-            <span class="card__hint" id="events-hint">—</span>
+            <div>
+              <h2 id="events-titulo">Comandos y acks</h2>
+              <span class="card__hint" id="events-hint">—</span>
+            </div>
           </header>
+          <p class="legend-inline" id="events-legend">
+            <strong>Tipos de evento:</strong>
+            <span class="event__type event__type--anomaly">anomalía</span>
+            métrica fuera de umbral
+            <span class="event__type event__type--command">comando</span>
+            servidor envía acción correctiva
+            <span class="event__type event__type--ack">ack</span>
+            nodo confirma ejecución
+            <span class="event__type event__type--error">falla</span>
+            error o nodo caído
+          </p>
           <ol class="event-list" id="event-list" aria-live="polite"></ol>
           <p class="empty" id="events-empty" hidden>
             Sin comandos ni acks recientes. Lanza un escenario para ver el flujo.
@@ -203,7 +321,7 @@
     </main>
 
     <footer class="footbar">
-      <span>Monitor local · autenticación por token · auto-actualiza cada 5 s</span>
+      <span>Monitor local · autenticación por token · auto-actualiza cada 1 s</span>
       <a class="footbar__link" href="snapshot.html" target="_blank" rel="noopener">Vista reporte</a>
     </footer>
 

@@ -15,13 +15,23 @@ Este documento define el contrato inicial que deben respetar cliente, servidor, 
 | Separador de mensajes | Salto de linea `\n` |
 | Tipos de mensaje | `metric`, `command`, `ack`, `error` |
 | Reconexion cliente | Cada 5 segundos |
-| Persistencia | Pendiente del Rol D; SQLite recomendado |
+| Persistencia | SQLite (implementado, 3 tablas) |
+| Polling frontend | Cada 1 segundo a `/api/state` |
+| Cooldown anti-spam | 12s (servidor, comandos duplicados) |
+| Mitigacion cliente | Local, gradual por tipo de anomalia |
 
 ## Autenticacion Basica
 
-Cada nodo enviara un token estatico. La validacion del token corresponde al Rol C.
+Cada nodo envia un token estatico definido en `shared/auth.py`. El servidor valida el token
+en cada mensaje `metric` y `ack`. Los tokens por defecto son:
 
-El archivo concreto de tokens queda pendiente para el Rol C.
+| Nodo | Token |
+|---|---|
+| `node-01` | `node-01-secret` |
+| `node-02` | `node-02-secret` |
+| `node-03` | `node-03-secret` |
+
+Un token invalido produce respuesta `AUTH_FAILED` sin persistir la metrica.
 
 ## Mensaje Metric
 
@@ -52,6 +62,8 @@ Campos:
 | `service_web` | string | `ok` o `falla` |
 | `event_log` | string | Texto descriptivo |
 | `token` | string | Token valido para `node_id` |
+| `mitigation_active` | bool | (opcional) true si hay mitigacion activa tras un comando |
+| `mitigation_type` | string | (opcional) tipo de mitigacion, ej. `reduce_cpu` |
 
 ## Mensaje Command
 
@@ -64,13 +76,22 @@ Campos:
 }
 ```
 
-Acciones validas iniciales:
+El servidor persiste cada comando con un estado:
+
+- `pending` — emitido, esperando confirmación
+- `confirmed` — ACK recibido del cliente
+- `timed_out` — no se recibió ACK dentro del plazo (60s)
+
+Acciones validas:
 
 - `reduce_cpu`
 - `reduce_ram`
 - `fix_latency`
 - `restart_service`
 - `normalize_node`
+
+El servidor implementa un **cooldown anti-spam** de 12 segundos: si un comando de la misma
+acción para el mismo nodo fue confirmado hace menos de 12s, se rechaza el duplicado.
 
 ## Mensaje ACK
 
@@ -80,14 +101,18 @@ Acciones validas iniciales:
   "node_id": "node-01",
   "command_id": 1,
   "status": "applied",
-  "token": "node-01-secret"
+  "token": "node-01-secret",
+  "mitigation_active": true,
+  "mitigation_type": "reduce_cpu"
 }
 ```
 
-Estados validos iniciales:
+Estados validos:
 
 - `applied`
 - `failed`
+
+Campos opcionales de mitigacion incluidos cuando el cliente tiene mitigacion activa:
 
 ## Mensaje Error
 
@@ -119,8 +144,22 @@ Codigos iniciales:
 ## Flujo Esperado
 
 ```text
-Cliente -> metric -> Servidor
-Servidor -> command -> Cliente, si hay anomalia
-Cliente -> ack -> Servidor
+Cliente -> metric (con mitigation_active true/false) -> Servidor
+Servidor -> command -> Cliente, si hay anomalia (respetando cooldown)
+Cliente -> ack (con mitigation_active/type) -> Servidor
 Cliente -> metric recuperada -> Servidor
 ```
+
+## Endpoint de estado (/api/state)
+
+El dashboard expone `/api/state` como fuente única de verdad, consultado cada 1s.
+Responde con un snapshot JSON que incluye:
+
+- Estado del servidor (online/offline, puerto)
+- Nodos activos con última métrica, mitigación y antigüedad
+- Series temporales de métricas
+- Últimos comandos y ACKs
+- Eventos combinados ordenados cronológicamente
+- Últimas líneas de log
+
+Ver `docs/frontend-realtime.md` para la especificación completa del payload.

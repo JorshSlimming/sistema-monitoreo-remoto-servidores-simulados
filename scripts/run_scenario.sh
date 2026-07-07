@@ -22,10 +22,11 @@ run_scenario() {
     local mode="$1"
     local node_id="${2:-node-01}"
     local interval="${3:-5.0}"
+    local duration="${4:-10}"
 
     echo ""
     echo "=============================================="
-    echo "  Escenario: $mode  (nodo=$node_id, intervalo=${interval}s)"
+    echo "  Escenario: $mode  (nodo=$node_id, intervalo=${interval}s, duracion=${duration}s)"
     echo "=============================================="
 
     # Iniciar servidor de fondo
@@ -39,7 +40,7 @@ run_scenario() {
     else
         python3 -m client.tcp_client --node-id "$node_id" --mode "$mode" --interval "$interval" &
         CLIENT_PID=$!
-        sleep 5
+        sleep "$duration"
         kill "$CLIENT_PID" 2>/dev/null || true
     fi
 
@@ -49,21 +50,21 @@ run_scenario() {
 }
 
 case "${1:-normal}" in
-    normal)         run_scenario normal node-01 3.0 ;;
-    high-cpu)       run_scenario high-cpu node-01 3.0 ;;
-    high-ram)       run_scenario high-ram node-01 3.0 ;;
-    high-latency)   run_scenario high-latency node-01 3.0 ;;
-    service-failure) run_scenario service-failure node-01 3.0 ;;
-    failed-event)   run_scenario failed-event node-01 3.0 ;;
+    normal)         run_scenario normal node-01 3.0 10 ;;
+    high-cpu)       run_scenario high-cpu node-01 3.0 10 ;;
+    high-ram)       run_scenario high-ram node-01 3.0 10 ;;
+    high-latency)   run_scenario high-latency node-01 3.0 10 ;;
+    service-failure) run_scenario service-failure node-01 3.0 10 ;;
+    failed-event)   run_scenario failed-event node-01 3.0 10 ;;
     multi-node)
-        run_scenario normal node-01 3.0 &
-        run_scenario high-cpu node-02 3.0 &
-        run_scenario high-latency node-03 3.0 &
+        run_scenario normal node-01 3.0 10 &
+        run_scenario high-cpu node-02 3.0 10 &
+        run_scenario high-latency node-03 3.0 10 &
         wait
         ;;
     all)
         for mode in normal high-cpu high-ram high-latency service-failure failed-event; do
-            run_scenario "$mode" node-01 2.0
+            run_scenario "$mode" node-01 2.0 8
         done
         ;;
     *)

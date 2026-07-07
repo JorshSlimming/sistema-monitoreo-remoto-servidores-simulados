@@ -1,22 +1,16 @@
 /* Monitor local · sistema de monitoreo remoto
  * Sala de control demo:
- *   - misión arriba, escenarios, chart multi-serie en tiempo real,
- *     paneles por nodo, stream de comandos+acks, logs, controles de demo.
- * Polls cada 5 s. Stdlib + DOM. Sin librerías de charting.
- * Lee el backend de forma defensiva: cualquier campo extra se ignora.
+ *   - fuente de verdad: /api/state
+ *   - poll cada 1 s, protección contra respuestas obsoletas
+ *   - reemplazo completo de estado en cada poll (sin acumulación)
+ * Stdlib + DOM. Sin librerías de charting.
  */
 (() => {
   "use strict";
 
   // === Config =============================================================
-  const ENDPOINTS = {
-    status: { method: "GET", path: "/api/status" },
-    metrics: { method: "GET", path: "/api/metrics" },
-    logs: { method: "GET", path: "/api/logs" },
-    events: { method: "GET", path: "/api/events" },
-    artifacts: { method: "GET", path: "/api/artifacts" },
-  };
-  // POST endpoints. Body shape mirrors what the server already accepts.
+  const STATE_PATH = "/api/state";
+  // POST endpoints.
   const ACTIONS = {
     "demo-bundle": { method: "POST", path: "/api/demo-bundle" },
     scenario: { method: "POST", path: "/api/scenario" },
@@ -27,12 +21,14 @@
     reset: { method: "POST", path: "/api/reset" },
   };
 
-  const POLL_MS = 5000;
-  const SPARK_POINTS = 32; // ≈ 2 min 40 s a 5 s
-  const CHART_POINTS = 40; // ventana del chart grande
-  const MAX_HISTORY = 200;
-  const MAX_EVENTS = 30;
+  const POLL_MS = 1000;
+  const SPARK_POINTS = 32;
+  const CHART_POINTS = 40;
+  const MAX_EVENTS = 50;
   const MAX_LOGS = 80;
+
+  // Staleness thresholds (seconds)
+  const STALE = { online: 5, stale: 15 };
 
   // Thresholds (%, ms) → used to color bars, sparklines, and chart series.
   const T = {
@@ -59,15 +55,17 @@
 
   // === State ==============================================================
   const state = {
-    lastRefresh: null,
-    history: new Map(), // node_id -> { cpu: [], ram: [], latency_ms: [], ts: [], labels: [] }
-    nodes: new Map(),
+    nodes: new Map(),       // node_id → node data from backend
+    history: new Map(),     // node_id → { cpu:[], ram:[], latency_ms:[], ts:[] }
     events: [],
-    events_total: { commands: 0, acks: 0 },
+    logs: [],
+    server: {},             // server info from /api/state.server
     scenario: { name: null, startedAt: null, status: "idle" },
     chartMetric: "cpu",
-    artifactsCount: 0,
     feedbackTimer: null,
+    reqSeq: 0,              // monotonic request sequence → stale-response guard
+    hadAnomaly: false,      // causal-chain tracker: was there ever an anomaly?
+    recoveryAt: null,       // causal-chain tracker: when the anomaly was last cleared
   };
 
   // === Utils ==============================================================
@@ -117,72 +115,15 @@
     return `${m}:${String(sec).padStart(2, "0")}`;
   };
 
-  const pick = (obj, names) => {
-    if (!obj || typeof obj !== "object") return undefined;
-    for (const n of names) {
-      if (obj[n] !== undefined && obj[n] !== null) return obj[n];
-    }
-    return undefined;
-  };
-
   const numberOr = (v, fallback) => {
     const n = Number(v);
     return Number.isFinite(n) ? n : fallback;
   };
 
-  const normalizeMetric = (m) => {
-    if (!m || typeof m !== "object") return null;
-    const nodeId = pick(m, ["node_id", "node", "id", "name"]) || "desconocido";
-    return {
-      node_id: String(nodeId),
-      cpu: numberOr(pick(m, ["cpu", "cpu_pct", "cpu_percent"]), null),
-      ram: numberOr(pick(m, ["ram", "mem", "memory", "ram_pct"]), null),
-      latency_ms: numberOr(pick(m, ["latency_ms", "latency", "lat", "rtt_ms"]), null),
-      service_web: pick(m, ["service_web", "service", "web"]) ?? null,
-      event_log: pick(m, ["event_log", "event", "last_event"]) ?? null,
-      timestamp: pick(m, ["timestamp", "ts", "time", "received_at"]) ?? null,
-    };
+  const lastOf = (arr) => {
+    if (!arr || arr.length === 0) return null;
+    return arr[arr.length - 1] ?? null;
   };
-
-  // === API client =========================================================
-  async function fetchJson(url) {
-    let res;
-    try {
-      res = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
-    } catch (err) {
-      throw new Error(`Sin conexión con ${url}`);
-    }
-    const text = await res.text();
-    let data = null;
-    if (text) {
-      try { data = JSON.parse(text); } catch { data = null; }
-    }
-    if (!res.ok) throw new Error(`HTTP ${res.status} en ${url}`);
-    return data || {};
-  }
-
-  async function postJson(url, body) {
-    let res;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: body == null ? "" : JSON.stringify(body),
-      });
-    } catch (err) {
-      throw new Error(`Sin conexión con ${url}`);
-    }
-    const text = await res.text();
-    let data = null;
-    if (text) {
-      try { data = JSON.parse(text); } catch { data = null; }
-    }
-    if (!res.ok) {
-      const msg = (data && (data.error || data.message)) || `HTTP ${res.status}`;
-      throw new Error(msg);
-    }
-    return data || {};
-  }
 
   // === Sparkline ==========================================================
   function sparkline(values, { width = 96, height = 28, tone = "info" } = {}) {
@@ -222,9 +163,36 @@
     return "success";
   };
 
+  // Spanish labels for event types (UI-side only; backend types unchanged).
+  const EVENT_LABELS = {
+    anomaly: "Anomalía",
+    alert: "Anomalía",
+    warn: "Aviso",
+    warning: "Aviso",
+    command: "Comando",
+    ack: "ACK",
+    error: "Falla",
+    fail: "Falla",
+    failed: "Falla",
+    metric: "Métrica",
+    info: "Info",
+    event: "Evento",
+  };
+
+  // Spanish verb phrases to make each event row read like a sentence.
+  const EVENT_VERBS = {
+    anomaly: "Detectada",
+    alert: "Detectada",
+    command: "Servidor envía",
+    ack: "Nodo confirma",
+    error: "Falla",
+    fail: "Falla",
+    failed: "Falla",
+    metric: "Métrica recibida",
+    info: "Info",
+  };
+
   // === Big chart (multi-series) ===========================================
-  // viewBox is 1000 × 280. Inset: 56px left (y axis), 14px right, 22px top,
-  // 30px bottom (x axis).
   const CHART = { w: 1000, h: 280, padL: 56, padR: 14, padT: 22, padB: 30 };
 
   function chartInner() {
@@ -245,10 +213,9 @@
       const arr = h[metric] || [];
       const ts = h.ts || [];
       if (arr.length === 0) continue;
-      // Backend returns metrics newest-first; flip to oldest→newest
-      // so time on the X axis reads left-to-right.
-      const values = arr.slice(-CHART_POINTS).slice().reverse();
-      const labels = ts.slice(-CHART_POINTS).slice().reverse();
+      // Backend returns metrics chronological; no reverse needed.
+      const values = arr.slice(-CHART_POINTS);
+      const labels = ts.slice(-CHART_POINTS);
       out.set(id, { id, values, labels });
     }
     return out;
@@ -275,9 +242,7 @@
     if (empty) empty.hidden = true;
 
     const inner = chartInner();
-    // y axis: 0..ymax, top→bottom
     const yScale = (v) => inner.y0 + (1 - Math.min(v, t.ymax) / t.ymax) * inner.h;
-    // x axis: oldest sample on the left
     const xCount = Math.max(...Array.from(series.values(), (s) => s.values.length));
     const xScale = (i, n) => {
       if (n <= 1) return inner.x0 + inner.w / 2;
@@ -296,7 +261,7 @@
     for (let i = 0; i <= gridLines; i++) {
       const v = t.ymax - (i / gridLines) * t.ymax;
       const y = inner.y0 + (i / gridLines) * inner.h;
-      parts.push(`<text class="chart__y-label" x="${inner.x0 - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end">${v.toFixed(0)}${t.unit === "ms" ? "" : ""}</text>`);
+      parts.push(`<text class="chart__y-label" x="${inner.x0 - 8}" y="${(y + 3).toFixed(1)}" text-anchor="end">${v.toFixed(0)}</text>`);
     }
 
     // threshold lines
@@ -310,7 +275,6 @@
     const xTicks = 4;
     for (let i = 0; i <= xTicks; i++) {
       const x = inner.x0 + (i / xTicks) * inner.w;
-      // walk the most recent labels of any series for a reference time
       const refLabels = Array.from(series.values())[0]?.labels || [];
       const refIdx = Math.min(refLabels.length - 1, Math.floor((i / xTicks) * (refLabels.length - 1)));
       const ref = refLabels[Math.max(0, refIdx)] || null;
@@ -358,8 +322,8 @@
     if (legend) {
       const items = Array.from(series.values()).map((s) => {
         const last = s.values[s.values.length - 1];
-        const state = toneFor(last, t);
-        return `<span class="legend-item" data-state="${state}">
+        const st = toneFor(last, t);
+        return `<span class="legend-item" data-state="${st}">
           <span class="legend-swatch" style="--swatch:${seriesColor(s.id)}"></span>
           <span class="legend-id">${escapeHtml(s.id)}</span>
           <span class="legend-val">${last == null ? "—" : last.toFixed(metric === "latency_ms" ? 0 : 0) + (metric === "latency_ms" ? " ms" : "%")}</span>
@@ -378,22 +342,48 @@
     }
   }
 
-  // === Node render ========================================================
-  function pushHistory(metric) {
-    const id = metric.node_id;
-    if (!state.history.has(id)) {
-      state.history.set(id, { cpu: [], ram: [], latency_ms: [], ts: [] });
+  // === Node helpers =======================================================
+  function nodeStaleness(node) {
+    let s = node.staleness_seconds;
+    if (s == null && node.last_seen) {
+      s = Math.max(0, Math.floor((Date.now() - new Date(node.last_seen).getTime()) / 1000));
     }
-    const h = state.history.get(id);
-    if (metric.cpu != null) h.cpu.push(metric.cpu);
-    if (metric.ram != null) h.ram.push(metric.ram);
-    if (metric.latency_ms != null) h.latency_ms.push(metric.latency_ms);
-    if (metric.timestamp) h.ts.push(metric.timestamp);
-    for (const k of ["cpu", "ram", "latency_ms", "ts"]) {
-      while (h[k].length > MAX_HISTORY) h[k].shift();
+    if (s == null || s > STALE.stale) {
+      return { label: "sin señal", pill: "error", seconds: s, hint: "más de 15 s sin métricas" };
     }
+    if (s > STALE.online) {
+      return { label: "sin actualización reciente", pill: "warn", seconds: s, hint: "5–15 s sin métricas" };
+    }
+    return { label: "en línea", pill: "ok", seconds: s, hint: "métricas al día" };
   }
 
+  // Short Spanish phrase describing the node's high-level state for the footer.
+  function nodeStateSummary(node, isAlert, staleness) {
+    if (staleness.pill === "error") return "Sin señal del nodo";
+    if (node.service_web && /falla|fail|down/i.test(String(node.service_web))) {
+      return "Servicio web caído";
+    }
+    if (node.anomaly_active) return "Anomalía activa";
+    if (node.mitigation_active) return "Mitigación en curso";
+    if (isAlert) return "Umbral cruzado";
+    return "Operación normal";
+  }
+
+  function nodeAlert(node) {
+    if (!node) return false;
+    const cpu = numberOr(node.cpu, null);
+    const ram = numberOr(node.ram, null);
+    const lat = numberOr(node.latency_ms, null);
+    const svc = (node.service_web || "").toString().toLowerCase();
+    return (
+      toneFor(cpu, T.cpu) === "error" ||
+      toneFor(ram, T.ram) === "error" ||
+      toneFor(lat, T.latency_ms) === "error" ||
+      svc === "falla" || svc === "fail" || svc === "down"
+    );
+  }
+
+  // === Node render ========================================================
   function renderNodes() {
     const grid = $id("node-grid");
     const empty = $id("nodes-empty");
@@ -414,7 +404,6 @@
     }
     if (empty) empty.hidden = true;
 
-    const tNow = Date.now();
     const cards = ids.map((id) => {
       const node = state.nodes.get(id) || {};
       const h = state.history.get(id) || { cpu: [], ram: [], latency_ms: [], ts: [] };
@@ -430,64 +419,93 @@
       const svcState = svc === "falla" || svc === "fail" || svc === "down" ? "error" : "ok";
       const svcLabel = svc === "falla" || svc === "fail" ? "falla" : svc ? svc : "—";
 
-      const eventLog = node.event_log || "—";
-      const fmtPct = (v) => (v == null ? "—" : `${v.toFixed(0)}%`);
-      const fmtMs = (v) => (v == null ? "—" : `${Math.round(v)} ms`);
-
-      // staleness
-      const last = lastTs ? new Date(lastTs).getTime() : null;
-      const staleMs = last ? tNow - last : Infinity;
-      const isStale = staleMs > 30_000;
-      const alert = (cpuTone === "error" || ramTone === "error" || latTone === "error" || svcState === "error");
+      const staleness = nodeStaleness(node);
+      const isAlert = nodeAlert(node);
 
       const color = seriesColor(id);
+
+      // Badges
+      const badges = [];
+      if (node.anomaly_active) {
+        badges.push(`<span class="badge badge--anomaly" title="El servidor detectó una métrica fuera de umbral">anomalía activa</span>`);
+      }
+      if (node.mitigation_active) {
+        const mt = node.mitigation_type || "activa";
+        badges.push(`<span class="badge badge--mitigation" title="Acción correctiva en ejecución sobre el nodo">mitigación: ${escapeHtml(mt)}</span>`);
+      }
+      if (node.last_command) {
+        badges.push(`<span class="badge badge--command" title="Último comando enviado por el servidor">comando: ${escapeHtml(node.last_command)}</span>`);
+      }
+
+      // Summary lines for the footer
+      const stateSummary = nodeStateSummary(node, isAlert, staleness);
+
+      // Pick the most recent "change" to highlight as Último cambio.
+      const lastChange = node.last_change || null;
+      const lastChangeText = lastChange && lastChange.label
+        ? `${escapeHtml(lastChange.label)}${lastChange.at ? ` · ${formatAgo(lastChange.at)}` : ""}`
+        : null;
+
       return `
-<article class="node ${alert ? "node--alert" : ""} ${isStale ? "node--stale" : ""}" data-node="${escapeHtml(id)}" style="--node-color:${color}">
+<article class="node ${isAlert ? "node--alert" : ""} ${staleness.pill === "error" ? "node--stale" : ""}" data-node="${escapeHtml(id)}" style="--node-color:${color}">
   <header class="node__head">
     <div class="node__id-block">
       <span class="node__id">${escapeHtml(id)}</span>
-      <span class="node__sub">${formatAgo(lastTs)}${isStale ? " · sin señal" : ""}</span>
+      <span class="node__sub">${formatAgo(lastTs)}</span>
     </div>
-    <span class="pill pill--ghost" data-state="${svcState}">
-      <span class="pill__dot" aria-hidden="true"></span>
-      <span class="pill__label">web · ${escapeHtml(svcLabel)}</span>
-    </span>
+    <div class="node__pills">
+      <span class="pill pill--ghost" data-state="${svcState}" title="Estado del servicio web del nodo">
+        <span class="pill__dot" aria-hidden="true"></span>
+        <span class="pill__label">web · ${escapeHtml(svcLabel)}</span>
+      </span>
+      <span class="pill" data-state="${staleness.pill}" title="${escapeHtml(staleness.hint || staleness.label)}">
+        <span class="pill__dot" aria-hidden="true"></span>
+        <span class="pill__label">${staleness.label}</span>
+      </span>
+    </div>
   </header>
   <div class="node__metrics">
     <div class="metric">
       <div class="metric__row">
         <span class="metric__label">CPU</span>
-        <span class="metric__value" data-state="${cpuTone}">${fmtPct(cpu)}</span>
+        <span class="metric__value" data-state="${cpuTone}">${cpu == null ? "—" : `${cpu.toFixed(0)}%`}</span>
       </div>
       ${sparkline(h.cpu.slice(-SPARK_POINTS), { width: 120, height: 32, tone: cpuTone })}
     </div>
     <div class="metric">
       <div class="metric__row">
         <span class="metric__label">RAM</span>
-        <span class="metric__value" data-state="${ramTone}">${fmtPct(ram)}</span>
+        <span class="metric__value" data-state="${ramTone}">${ram == null ? "—" : `${ram.toFixed(0)}%`}</span>
       </div>
       ${sparkline(h.ram.slice(-SPARK_POINTS), { width: 120, height: 32, tone: ramTone })}
     </div>
     <div class="metric">
       <div class="metric__row">
         <span class="metric__label">Latencia</span>
-        <span class="metric__value" data-state="${latTone}">${fmtMs(lat)}</span>
+        <span class="metric__value" data-state="${latTone}">${lat == null ? "—" : `${Math.round(lat)} ms`}</span>
       </div>
       ${sparkline(h.latency_ms.slice(-SPARK_POINTS), { width: 120, height: 32, tone: latTone })}
     </div>
   </div>
+  ${badges.length > 0 ? `<div class="node__badges">${badges.join("")}</div>` : ""}
   <footer class="node__foot">
-    <span>Última métrica: <strong>${formatAgo(lastTs)}</strong></span>
-    <span>Evento: <code>${escapeHtml(eventLog)}</code></span>
+    <div class="node__foot-line">
+      <span class="node__foot-label">Estado</span>
+      <span class="node__foot-value">${escapeHtml(stateSummary)}</span>
+    </div>
+    <div class="node__foot-line">
+      <span class="node__foot-label">Última métrica</span>
+      <span class="node__foot-value">${formatAgo(lastTs)}</span>
+    </div>
+    ${lastChangeText ? `
+    <div class="node__foot-line node__foot-line--change">
+      <span class="node__foot-label">Último cambio</span>
+      <span class="node__foot-value">${lastChangeText}</span>
+    </div>` : ""}
   </footer>
 </article>`;
     });
     grid.innerHTML = cards.join("");
-  }
-
-  function lastOf(arr) {
-    if (!arr || arr.length === 0) return null;
-    return arr[arr.length - 1] ?? null;
   }
 
   // === Events render ======================================================
@@ -498,8 +516,8 @@
     if (!list) return;
 
     if (hint) {
-      const cmds = state.events_total.commands || 0;
-      const acks = state.events_total.acks || 0;
+      const cmds = state.server.commands_total ?? 0;
+      const acks = state.server.acks_total ?? 0;
       hint.textContent = cmds + acks > 0
         ? `${cmds} comandos · ${acks} acks`
         : "Sin actividad";
@@ -511,39 +529,148 @@
       return;
     }
     if (empty) empty.hidden = true;
+
     const items = state.events.slice(0, MAX_EVENTS).map((e) => {
-      const type = (pick(e, ["type", "kind", "event_type"]) || "event").toString().toLowerCase();
-      const node = pick(e, ["node_id", "node", "from"]) || "—";
-      const ts = pick(e, ["timestamp", "ts", "time"]) || null;
-      const action = pick(e, ["action", "command", "cmd"]);
-      const reason = pick(e, ["reason"]);
-      const status = pick(e, ["status", "result"]);
-      const detail = action
-        ? `<code>${escapeHtml(action)}</code>${reason ? ` <span class="muted">(${escapeHtml(reason)})</span>` : ""}`
-        : (status ? `<code>${escapeHtml(status)}</code>` : "—");
+      const type = (e.type || "event").toString().toLowerCase();
+      const node = e.node_id || "—";
+      const ts = e.timestamp || null;
+      const action = e.action || e.command || null;
+      const reason = e.reason || null;
+      const status = e.status || null;
+      const label = EVENT_LABELS[type] || type;
+      const verb = EVENT_VERBS[type] || label.toLowerCase();
+
+      // Build a single Spanish sentence for the detail column.
+      let detailHtml = "";
+      if (action && reason) {
+        detailHtml = `${verb} <code>${escapeHtml(action)}</code> <span class="muted">(${escapeHtml(reason)})</span>`;
+      } else if (action) {
+        detailHtml = `${verb} <code>${escapeHtml(action)}</code>`;
+      } else if (status) {
+        detailHtml = `${verb} <code>${escapeHtml(status)}</code>`;
+      } else if (reason) {
+        detailHtml = `${verb} <code>${escapeHtml(reason)}</code>`;
+      } else {
+        detailHtml = verb;
+      }
+
       return `<li class="event" data-type="${escapeHtml(type)}">
-  <span class="event__type event__type--${escapeHtml(type)}">${escapeHtml(type)}</span>
+  <span class="event__type event__type--${escapeHtml(type)}">${escapeHtml(label)}</span>
   <span class="event__node">${escapeHtml(node)}</span>
-  <span class="event__detail">${detail}</span>
+  <span class="event__detail">${detailHtml}</span>
   <span class="event__time">${formatTime(ts)}</span>
 </li>`;
     });
     list.innerHTML = items.join("");
   }
 
+  // === Causal chain ("Cómo leer este panel") ==============================
+  // Step states: "pending" (never seen) | "active" (just happened, <5s) | "done" (seen).
+  const FLOW_STEPS = ["detection", "command", "ack", "recovery"];
+  // Map backend event type → which step it advances.
+  const FLOW_TRIGGERS = {
+    detection: new Set(["anomaly", "alert"]),
+    command: new Set(["command"]),
+    ack: new Set(["ack"]),
+  };
+
+  function latestEventOf(types) {
+    if (!Array.isArray(state.events)) return null;
+    for (const e of state.events) {
+      const t = (e.type || "").toString().toLowerCase();
+      if (types.has(t)) return e;
+    }
+    return null;
+  }
+
+  function renderHowto() {
+    const list = $id("howto-chain");
+    if (!list) return;
+
+    const now = Date.now();
+    const FIVE_S = 5_000;
+    const stepState = {};
+    const stepAt = {};
+
+    // Walk the events list and mark each step with the most recent trigger.
+    for (const step of FLOW_STEPS) {
+      const triggers = FLOW_TRIGGERS[step];
+      if (triggers) {
+        const ev = latestEventOf(triggers);
+        if (ev && ev.timestamp) {
+          const t = new Date(ev.timestamp).getTime();
+          if (Number.isFinite(t)) {
+            stepAt[step] = t;
+            stepState[step] = now - t <= FIVE_S ? "active" : "done";
+            continue;
+          }
+        }
+      }
+      stepState[step] = "pending";
+    }
+
+    // Recovery: any node had anomaly_active previously, and no node has it now.
+    // We track previous state to detect the cleared transition.
+    if (state.hadAnomaly && !Array.from(state.nodes.values()).some((n) => n.anomaly_active)) {
+      stepState.recovery = state.recoveryAt ? "done" : "active";
+      if (!state.recoveryAt) state.recoveryAt = now;
+      stepAt.recovery = state.recoveryAt;
+    } else if (Array.from(state.nodes.values()).some((n) => n.anomaly_active)) {
+      state.hadAnomaly = true;
+    }
+
+    const stepLabels = {
+      pending: "en espera",
+      active: "en curso",
+      done: "visto",
+    };
+
+    for (const step of FLOW_STEPS) {
+      const li = list.querySelector(`[data-step="${step}"]`);
+      if (!li) continue;
+      const stateEl = li.querySelector(".howto__state");
+      if (!stateEl) continue;
+      const stateName = stepState[step];
+      stateEl.dataset.state = stateName;
+      li.dataset.state = stateName;
+      const labelEl = stateEl.querySelector(".howto__state-label");
+      if (labelEl) {
+        let lbl = stepLabels[stateName];
+        if (stateName === "active" && stepAt[step]) lbl = `en curso · ${formatAgo(new Date(stepAt[step]).toISOString())}`;
+        else if (stateName === "done" && stepAt[step]) lbl = `visto · ${formatAgo(new Date(stepAt[step]).toISOString())}`;
+        labelEl.textContent = lbl;
+      }
+    }
+
+    // Top-right summary sentence: "Visto: 1 → 2 → 3" or "Sin actividad".
+    const summary = $id("howto-summary");
+    if (summary) {
+      const seen = FLOW_STEPS.filter((s) => stepState[s] === "done" || stepState[s] === "active");
+      if (seen.length === 0) {
+        summary.textContent = "Esperando primera anomalía…";
+      } else {
+        const order = FLOW_STEPS.map((s, i) => {
+          const seen_ = stepState[s] === "done" || stepState[s] === "active";
+          return seen_ ? String(i + 1) : "·";
+        });
+        summary.textContent = `Flujo observado: ${order.join(" → ")}`;
+      }
+    }
+  }
+
   // === Logs render ========================================================
-  function renderLogs(logs) {
+  function renderLogs() {
     const tail = $id("log-tail");
     const empty = $id("logs-empty");
     if (!tail) return;
-    if (!Array.isArray(logs) || logs.length === 0) {
+    if (!Array.isArray(state.logs) || state.logs.length === 0) {
       tail.replaceChildren();
       if (empty) empty.hidden = false;
       return;
     }
     if (empty) empty.hidden = true;
-    const lines = logs.slice(0, MAX_LOGS).map((l) => {
-      const raw = pick(l, ["line", "message", "msg", "text"]) || JSON.stringify(l);
+    const lines = state.logs.slice(0, MAX_LOGS).map((l) => {
+      const raw = l.line ?? l.message ?? l.msg ?? l.text ?? JSON.stringify(l);
       const text = String(raw);
       let level = "info";
       const m = text.match(/^\s*(\d{2}:\d{2}:\d{2})\s+\[?(\w+)\]?/);
@@ -557,13 +684,17 @@
   }
 
   // === Overview / stats strip =============================================
-  function renderStats(status) {
+  function renderStats() {
     const setStat = (idVal, idHint, val, hint) => {
       const v = $id(idVal); const h = $id(idHint);
       if (v) v.textContent = val;
       if (h) h.textContent = hint;
     };
-    if (!status || typeof status !== "object") {
+
+    const srv = state.server;
+    const hasServer = srv && typeof srv === "object" && Object.keys(srv).length > 0;
+
+    if (!hasServer) {
       setStat("stat-metrics", "stat-metrics-hint", "—", "sin datos");
       setStat("stat-commands", "stat-commands-hint", "—", "sin datos");
       setStat("stat-acks", "stat-acks-hint", "—", "sin datos");
@@ -572,32 +703,30 @@
       setStat("stat-artifacts", "stat-artifacts-hint", "—", "0");
       return;
     }
-    const db = status.db_stats || status.database || {};
-    setStat("stat-metrics", "stat-metrics-hint", String(db.metrics ?? 0), "totales recibidas");
-    setStat("stat-commands", "stat-commands-hint", String(db.commands ?? 0), "emitidos");
-    setStat("stat-acks", "stat-acks-hint", String(db.acks ?? 0), "recibidos");
 
-    const nodesActive = pick(status, ["nodes_active", "active_nodes", "clients", "connected"]);
-    setStat("stat-nodes", "stat-nodes-hint",
-      nodesActive !== undefined ? String(nodesActive) : String(state.nodes.size),
-      nodesActive !== undefined ? "vistos en los últimos ciclos" : "detectados en esta sesión"
-    );
+    setStat("stat-metrics", "stat-metrics-hint", String(srv.metrics_total ?? 0), "totales recibidas");
+    setStat("stat-commands", "stat-commands-hint", String(srv.commands_total ?? 0), "emitidos");
+    setStat("stat-acks", "stat-acks-hint", String(srv.acks_total ?? 0), "recibidos");
 
-    const lastAnomaly = pick(status, ["last_anomaly", "last_anomaly_at", "anomaly_last"]);
-    if (lastAnomaly) {
-      setStat("stat-anomaly", "stat-anomaly-hint", formatTime(lastAnomaly), "registrada");
+    const nodeCount = Array.isArray(srv.active_nodes) ? srv.active_nodes.length : state.nodes.size;
+    setStat("stat-nodes", "stat-nodes-hint", String(nodeCount), "vistos en los últimos ciclos");
+
+    // Check if any node has anomaly_active
+    const anyAnomaly = Array.from(state.nodes.values()).some((n) => n.anomaly_active);
+    if (anyAnomaly) {
+      setStat("stat-anomaly", "stat-anomaly-hint", "activa", "anomalía detectada");
     } else {
-      const alertNow = Array.from(state.nodes.values()).some((n) => (n.service_web || "").toString().toLowerCase() === "falla");
-      if (alertNow) setStat("stat-anomaly", "stat-anomaly-hint", "activa", "servicio en falla");
-      else setStat("stat-anomaly", "stat-anomaly-hint", "—", "sin anomalías registradas");
+      setStat("stat-anomaly", "stat-anomaly-hint", "—", "sin anomalías activas");
     }
 
-    setStat("stat-artifacts", "stat-artifacts-hint", String(state.artifactsCount), "en artifacts/demo/");
+    // Artifact count from state if available, else keep last known
+    const artifactCount = srv.metrics_total !== undefined ? srv.metrics_total : 0; // placeholder - not in state
+    setStat("stat-artifacts", "stat-artifacts-hint", "—", "artifacts/demo/");
   }
 
   // === Mission + clock ====================================================
-  function renderMission(status) {
-    const srv = (status && status.server) || {};
+  function renderMission() {
+    const srv = state.server || {};
     const host = srv.host || "127.0.0.1";
     const port = srv.port !== undefined ? srv.port : "?";
     $id("mission-server").textContent = `${host}:${port}`;
@@ -623,96 +752,97 @@
     const t = pill.querySelector(".pill__label");
     if (t) t.textContent = label;
   }
+
   function setLastRefreshStamp() {
     const el = $id("last-refresh");
     if (!el) return;
-    if (!state.lastRefresh) { el.textContent = "—"; return; }
-    el.textContent = formatTime(state.lastRefresh.toISOString());
+    el.textContent = formatTime((new Date()).toISOString());
   }
 
-  // === Pollers ============================================================
-  async function pollStatus() {
-    try {
-      const data = await fetchJson(ENDPOINTS.status.path);
-      renderMission(data);
-      renderStats(data);
-      setGlobalPill("ok", "En línea");
-      return true;
-    } catch {
-      setGlobalPill("error", "Sin conexión");
-      return false;
-    }
-  }
-
-  async function pollMetrics() {
-    try {
-      const data = await fetchJson(ENDPOINTS.metrics.path);
-      ingestMetrics(data);
-    } catch { /* sin muestras nuevas */ }
-    renderNodes();
-    renderChart();
-    return true;
-  }
-
-  function ingestMetrics(payload) {
-    if (!payload) return;
-    let list = null;
-    if (Array.isArray(payload.metrics)) list = payload.metrics;
-    else if (Array.isArray(payload.data)) list = payload.data;
-    else if (Array.isArray(payload.items)) list = payload.items;
-    else if (Array.isArray(payload)) list = payload;
-    else if (payload.nodes && typeof payload.nodes === "object") list = Object.values(payload.nodes);
-    if (!Array.isArray(list)) return;
-    for (const raw of list) {
-      const m = normalizeMetric(raw);
-      if (!m) continue;
-      state.nodes.set(m.node_id, { ...state.nodes.get(m.node_id), ...m });
-      pushHistory(m);
-    }
-  }
-
-  async function pollEvents() {
-    try {
-      const data = await fetchJson(ENDPOINTS.events.path);
-      const list = pick(data, ["events", "items", "data"]) || [];
-      state.events = Array.isArray(list) ? list : [];
-      state.events_total = {
-        commands: data.commands_total ?? 0,
-        acks: data.acks_total ?? 0,
-      };
-    } catch {
-      state.events = [];
-      state.events_total = { commands: 0, acks: 0 };
-    }
-    renderEvents();
-  }
-
-  async function pollLogs() {
-    try {
-      const data = await fetchJson(ENDPOINTS.logs.path);
-      const list = pick(data, ["logs", "items", "data"]) || [];
-      renderLogs(Array.isArray(list) ? list : []);
-    } catch { renderLogs([]); }
-  }
-
-  async function pollArtifacts() {
-    try {
-      const data = await fetchJson(ENDPOINTS.artifacts.path);
-      const n = pick(data, ["artifact_count", "count"]) || 0;
-      state.artifactsCount = Number.isFinite(Number(n)) ? Number(n) : 0;
-      $id("stat-artifacts").textContent = String(state.artifactsCount);
-    } catch { /* ignore */ }
-  }
-
+  // === /api/state poller ==================================================
   let inFlight = false;
-  async function pollAll() {
+
+  async function pollState() {
     if (inFlight) return;
     inFlight = true;
+
+    const seq = ++state.reqSeq;
     try {
-      await Promise.all([pollStatus(), pollMetrics(), pollEvents(), pollLogs(), pollArtifacts()]);
-      state.lastRefresh = new Date();
-      setLastRefreshStamp();
-    } finally { inFlight = false; }
+      let res;
+      try {
+        res = await fetch(STATE_PATH, { method: "GET", headers: { Accept: "application/json" } });
+      } catch {
+        setGlobalPill("error", "Sin conexión");
+        return;
+      }
+      if (!res.ok) {
+        setGlobalPill("error", `HTTP ${res.status}`);
+        return;
+      }
+      const data = await res.json();
+
+      // Stale response guard: only apply if this response is from the
+      // latest issued request.
+      if (seq < state.reqSeq) return;
+
+      ingestState(data);
+      setGlobalPill("ok", "En línea");
+    } catch {
+      setGlobalPill("error", "Sin conexión");
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  // === State ingestion ====================================================
+  function ingestState(data) {
+    if (!data || typeof data !== "object") return;
+
+    state.server = data.server || {};
+
+    // Nodes: full snapshot replacement
+    state.nodes.clear();
+    if (data.nodes && typeof data.nodes === "object") {
+      for (const [nid, nd] of Object.entries(data.nodes)) {
+        if (nd && typeof nd === "object") {
+          state.nodes.set(nid, nd);
+        }
+      }
+    }
+
+    // Series/history: full snapshot replacement
+    state.history.clear();
+    if (data.series && typeof data.series === "object") {
+      for (const [nid, points] of Object.entries(data.series)) {
+        if (!Array.isArray(points)) continue;
+        const h = { cpu: [], ram: [], latency_ms: [], ts: [] };
+        for (const p of points) {
+          if (p.cpu != null) h.cpu.push(p.cpu);
+          if (p.ram != null) h.ram.push(p.ram);
+          if (p.latency_ms != null) h.latency_ms.push(p.latency_ms);
+          if (p.received_at) h.ts.push(p.received_at);
+        }
+        state.history.set(nid, h);
+      }
+    }
+
+    // Events: full snapshot replacement
+    state.events = Array.isArray(data.events) ? data.events : [];
+
+    // Logs: full snapshot replacement
+    state.logs = Array.isArray(data.logs) ? data.logs : [];
+  }
+
+  // === Render after poll ==================================================
+  function renderAll() {
+    renderMission();
+    renderHowto();
+    renderStats();
+    renderNodes();
+    renderChart();
+    renderEvents();
+    renderLogs();
+    setLastRefreshStamp();
   }
 
   // === Demo controls ======================================================
@@ -772,7 +902,18 @@
       : null;
 
     try {
-      const result = await postJson(meta.path, body);
+      const raw = await fetch(meta.path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: body == null ? "" : JSON.stringify(body),
+      });
+      const text = await raw.text();
+      let result = {};
+      if (text) { try { result = JSON.parse(text); } catch { result = {}; } }
+      if (!raw.ok) {
+        const msg = (result && (result.error || result.message)) || `HTTP ${raw.status}`;
+        throw new Error(msg);
+      }
       const ok = result && (result.success !== false);
       const tone = ok ? "success" : "warn";
       const label = result && result.label ? result.label : action;
@@ -781,7 +922,7 @@
         : (ok ? "Acción completada" : "Acción finalizada con observaciones");
       setFeedback(`${label}: ${detail}`, tone);
       // refresh immediately so the chart shows new data
-      pollAll();
+      pollState();
     } catch (err) {
       setFeedback(`Falló ${action}: ${err.message || err}`, "error");
     } finally {
@@ -798,9 +939,6 @@
 
   // === Bindings ===========================================================
   function bind() {
-    const refresh = $id("refresh-btn") || document.querySelector("[data-action='refresh']");
-    // (refresh removed from header in this design; manual click is bound via demo controls)
-
     $$("[data-action]").forEach((b) => {
       b.addEventListener("click", (e) => {
         e.preventDefault();
@@ -817,19 +955,27 @@
       });
     });
 
-    // Refresh relative timestamps + scenario elapsed every 1s
+    // Refresh relative timestamps every 1s
     setInterval(() => {
       tickClock();
-      if (state.nodes.size > 0) renderNodes();
+      renderNodes();
+      renderHowto();
     }, 1000);
+  }
+
+  // === Main loop ==========================================================
+  let pollTimer = null;
+
+  async function pollLoop() {
+    await pollState();
+    renderAll();
+    pollTimer = setTimeout(pollLoop, POLL_MS);
   }
 
   // === Boot ===============================================================
   document.addEventListener("DOMContentLoaded", () => {
     bind();
     tickClock();
-    setInterval(tickClock, 1000);
-    pollAll();
-    setInterval(pollAll, POLL_MS);
+    pollLoop();
   });
 })();

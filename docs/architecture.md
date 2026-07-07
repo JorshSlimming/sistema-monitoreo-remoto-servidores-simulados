@@ -8,10 +8,10 @@ flowchart TB
         N3["node-03<br/>client/tcp_client.py"]
     end
 
-    subgraph Servidor["Servidor Central"]
+    subgraph ServidorTCP["Servidor Central TCP"]
         CM["ConnectionManager<br/>server/connection_manager.py"]
         CS["ClientSession (por hilo)<br/>server/client_session.py"]
-        SS["ServerState<br/>server/server_state.py"]
+        SS["ServerState (cooldown)<br/>server/server_state.py"]
         CD["CommandDispatcher<br/>server/command_dispatcher.py"]
         SC["ServerConfig<br/>server/server_config.py"]
     end
@@ -25,13 +25,20 @@ flowchart TB
         SQLITE[("SQLite<br/>data/monitor.db")]
     end
 
+    subgraph Frontend["Frontend Web"]
+        DASH["Dashboard Server<br/>frontend/dashboard_server.py"]
+        API["/api/state (SSOT)"]
+        STATIC["static/app.js + style.css"]
+        BROWSER["Navegador (poll 1s)"]
+    end
+
     N1 -- "TCP / JSON+\\n" --> CM
     N2 -- "TCP / JSON+\\n" --> CM
     N3 -- "TCP / JSON+\\n" --> CM
 
     CM -- "acepta conexión" --> CS
     CS -- "token → validate" --> AUTH
-    CS -- "actualiza estado" --> SS
+    CS -- "actualiza estado (cooldown)" --> SS
     CS -- "detecta anomalía" --> CD
     CD -- "command" --> CS
     CS -- "persiste métrica" --> DB
@@ -40,7 +47,13 @@ flowchart TB
     DB --> SQLITE
     CS -- "metric normal?" --> N1
     CS -- "command (reduce_cpu)" --> N1
-    N1 -- "ack" --> CS
+    N1 -- "ack (enriquecido)" --> CS
+
+    SQLITE -. "lectura" .-> DASH
+    DASH --> API
+    API -. "HTTP JSON" .-> BROWSER
+    STATIC -. "sirve" .-> DASH
+    BROWSER -. "solicita /api/state" .-> API
 
     style N1 fill:#d4f1f9
     style N2 fill:#d4f1f9
@@ -53,6 +66,10 @@ flowchart TB
     style AUTH fill:#ffe6cc
     style DB fill:#e1d5e7
     style SQLITE fill:#e1d5e7
+    style DASH fill:#fff2cc
+    style API fill:#fff2cc
+    style STATIC fill:#fff2cc
+    style BROWSER fill:#fff2cc
 ```
 
 ## Flujo de mensajes
@@ -60,20 +77,25 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant C as Cliente (node-01)
-    participant S as Servidor
+    participant S as Servidor TCP
     participant A as Auth
     participant DB as SQLite
+    participant F as Frontend /api/state
 
-    C->>S: {"type":"metric","cpu":95,...}
+    C->>S: {"type":"metric","cpu":95, mitigation_active:true, ...}
     S->>A: validate_token(node-01, token)
     A-->>S: válido
     S->>DB: INSERT metric
     S->>C: {"type":"command","action":"reduce_cpu"}
     S->>DB: INSERT command
-    C->>S: {"type":"ack","command_id":1,"status":"applied"}
+    C->>C: aplica comando y reduce CPU gradualmente
+    C->>S: {"type":"ack","command_id":1,"mitigation_active":true,...}
     S->>DB: INSERT ack
-    C->>S: {"type":"metric","cpu":40,...}  (recuperado)
+    C->>S: {"type":"metric","cpu":40, mitigation_active:false} (recuperado)
     S->>DB: INSERT metric
+    F->>DB: SELECT cada 1s
+    F-->>F: construye /api/state
+    F-->>C: poll cada 1s (navegador)
 ```
 
 ## Flujo de reconexión
@@ -93,4 +115,29 @@ sequenceDiagram
     C->>S: TCP reconnect
     S-->>C: SYN-ACK
     C->>S: metric (seq continúa)
+```
+
+## Componentes del frontend
+
+```
+┌──────────────────────────────────────────┐
+│  Navegador Web                           │
+│  ┌────────────────────────────────────┐  │
+│  │  Dashboard HTML (index.html)        │  │
+│  │  ┌──────────────┐ ┌─────────────┐  │  │
+│  │  │ Panel nodos  │ │ Gráfico     │  │  │
+│  │  │ (tabla)      │ │ (CPU/RAM/   │  │  │
+│  │  │              │ │  latencia)  │  │  │
+│  │  └──────────────┘ └─────────────┘  │  │
+│  │  ┌──────────────┐ ┌─────────────┐  │  │
+│  │  │ Eventos      │ │ Logs        │  │  │
+│  │  │ (comandos +  │ │ (sistema)   │  │  │
+│  │  │  ACKs)       │ │             │  │  │
+│  │  └──────────────┘ └─────────────┘  │  │
+│  │  ┌──────────────────────────────┐  │  │
+│  │  │  Controles de escenario      │  │  │
+│  │  └──────────────────────────────┘  │  │
+│  └────────────────────────────────────┘  │
+│  Polling: GET /api/state cada 1000ms     │
+└──────────────────────────────────────────┘
 ```

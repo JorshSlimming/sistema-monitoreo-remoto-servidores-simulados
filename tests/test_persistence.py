@@ -117,6 +117,49 @@ class PersistenceIntegrationTest(unittest.TestCase):
 
         self.assertGreaterEqual(self._store._count_acks(), 1)
 
+    def test_command_status_updated_on_ack(self) -> None:
+        """After ack, command status transitions to 'confirmed' in the DB."""
+        sock = self._open_connection()
+        self._send_metric(sock, "node-01", 1, cpu=95.0, ram=45.0)
+
+        time.sleep(0.3)
+        raw = sock.recv(4096)
+        command = None
+        for line in raw.split(b"\n"):
+            if not line:
+                continue
+            msg = json.loads(line.decode("utf-8").strip())
+            if msg.get("type") == "command":
+                command = msg
+                break
+
+        self.assertIsNotNone(command)
+        assert command is not None
+        cid = command["command_id"]
+
+        ack = {
+            "type": "ack",
+            "node_id": "node-01",
+            "command_id": cid,
+            "status": "applied",
+            "token": get_token("node-01") or "unknown",
+        }
+        sock.sendall(_encode(ack))
+        time.sleep(0.2)
+
+        # Verify command status was updated in DB
+        status_rows = []
+        with self._store._lock:
+            cursor = self._store._conn.execute(
+                "SELECT status FROM commands WHERE command_id = ?", (cid,)
+            )
+            status_rows = cursor.fetchall()
+        self.assertEqual(len(status_rows), 1)
+        self.assertEqual(status_rows[0][0], "confirmed")
+
+        sock.close()
+        time.sleep(0.1)
+
     # ----------------------------------------------------------------
     # Helpers
     # ----------------------------------------------------------------

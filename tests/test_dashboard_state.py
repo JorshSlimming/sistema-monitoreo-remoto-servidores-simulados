@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import frontend.dashboard_server as dashboard_server  # pyright: ignore[reportMissingImports]
+from server.server_config import ServerConfig
 from storage.store import DatabaseStore
 
 
@@ -19,11 +20,13 @@ class DashboardStatePayloadTests(unittest.TestCase):
         self.addCleanup(self.store.close)
 
         self._old_db_path = dashboard_server._DB_PATH
+        self._old_monitor_config = dashboard_server._MONITOR_CONFIG
         dashboard_server._DB_PATH = self.db_path
         self.addCleanup(self._restore_db_path)
 
     def _restore_db_path(self) -> None:
         dashboard_server._DB_PATH = self._old_db_path
+        dashboard_server._MONITOR_CONFIG = self._old_monitor_config
 
     def test_build_state_payload_includes_nodes_series_commands_and_acks(self) -> None:
         self.store.save_metric(
@@ -112,6 +115,17 @@ class DashboardStatePayloadTests(unittest.TestCase):
         self.assertTrue(node["mitigation_active"])
         self.assertEqual(node["mitigation_type"], "reduce_cpu")
         self.assertEqual(node["last_command"], "reduce_cpu")
+
+    def test_state_payload_reports_tcp_server_reachability(self) -> None:
+        dashboard_server._MONITOR_CONFIG = ServerConfig(
+            host="127.0.0.1",
+            port=9,
+            db_path=str(self.db_path),
+        )
+
+        payload = dashboard_server._build_state_payload()
+
+        self.assertFalse(payload["server"]["running"])
 
 
 if __name__ == "__main__":

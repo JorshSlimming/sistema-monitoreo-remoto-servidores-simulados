@@ -36,7 +36,7 @@ run_scenario() {
 
     # Ejecutar cliente
     if [ "$mode" = "fake" ]; then
-        python3 tests/fake_client.py --node-id "$node_id" --mode normal
+        python3 tests/fake_client.py --node-id "$node_id" --mode normal --max-metrics 1
     else
         python3 -m client.tcp_client --node-id "$node_id" --mode "$mode" --interval "$interval" &
         CLIENT_PID=$!

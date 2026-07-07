@@ -285,6 +285,16 @@ class ChaosModeTests(unittest.TestCase):
             result = _chaos_anomaly(seq)
             self.assertEqual(result, ANOMALY_MODES[expected_key])
 
+    def test_chaos_keeps_cycling_after_normalize_node(self) -> None:
+        """normalize_node should not permanently disable chaos mode."""
+        s = ClientState(mode="chaos", anomaly_active=True)
+        _apply_command("normalize_node", s)
+
+        metric = build_metric("node-07", 1, "chaos", state=s)
+
+        self.assertTrue(metric["anomaly_active"])
+        self.assertEqual(metric["cpu"], ANOMALY_MODES["high-cpu"]["cpu"])
+
 
 if __name__ == "__main__":
     unittest.main()

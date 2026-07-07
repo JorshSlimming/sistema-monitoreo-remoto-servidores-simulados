@@ -4,7 +4,7 @@ help:
 	@echo "Uso: make <target>"
 	@echo ""
 	@echo "Targets disponibles:"
-	@echo "  test       Ejecutar suite de pruebas (53 tests)"
+	@echo "  test       Ejecutar suite de pruebas (60 tests)"
 	@echo "  demo       Iniciar proyecto completo (servidor TCP + frontend)"
 	@echo "  present    Iniciar modo presentación con clientes reales persistentes"
 	@echo "  client     Lanzar un cliente real persistente (MODE/NODE_ID/INTERVAL)"

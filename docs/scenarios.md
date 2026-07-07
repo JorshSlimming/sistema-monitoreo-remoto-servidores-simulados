@@ -174,7 +174,7 @@ make test
 python3 -m unittest discover -s tests -v
 ```
 
-Ejecuta **53 pruebas** que cubren:
+Ejecuta **60 pruebas** que cubren:
 - Construcción de métricas en todos los modos
 - Codificación/decodificación de mensajes
 - Estados del servidor (timeout, confirmación)

@@ -72,7 +72,14 @@ def _drain_socket(sock: socket.socket, node_id: str) -> None:
         raise
 
 
-def run_client(host: str, port: int, node_id: str, mode: str, interval: float) -> None:
+def run_client(
+    host: str,
+    port: int,
+    node_id: str,
+    mode: str,
+    interval: float,
+    max_metrics: int = 0,
+) -> None:
     print(f"[fake-client] starting as {node_id} (mode={mode}, interval={interval}s)")
     seq = 0
     while True:
@@ -86,8 +93,12 @@ def run_client(host: str, port: int, node_id: str, mode: str, interval: float) -
                     print(f"[fake-client] sending metric seq={seq} mode={mode}")
                     sock.sendall(encode_message(metric))
                     _drain_socket(sock, node_id)
+                    if max_metrics > 0 and seq >= max_metrics:
+                        return
                     time.sleep(interval)
         except (ConnectionRefusedError, ConnectionResetError, OSError, socket.timeout) as exc:
+            if max_metrics > 0 and seq >= max_metrics:
+                return
             print(f"[fake-client] connection lost ({exc}); reconnecting in 5s...")
             time.sleep(5)
 
@@ -110,6 +121,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--node-id", default="node-01")
     parser.add_argument("--interval", type=float, default=5.0, help="Seconds between metrics")
     parser.add_argument(
+        "--max-metrics",
+        type=int,
+        default=0,
+        help="Stop after this many metrics; 0 means run persistently",
+    )
+    parser.add_argument(
         "--mode",
         choices=[
             "normal",
@@ -126,4 +143,4 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    run_client(args.host, args.port, args.node_id, args.mode, args.interval)
+    run_client(args.host, args.port, args.node_id, args.mode, args.interval, args.max_metrics)

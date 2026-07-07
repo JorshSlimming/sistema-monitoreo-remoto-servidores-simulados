@@ -136,7 +136,7 @@ def _apply_command(action: str, state: ClientState) -> dict[str, Any]:
     elif action == "restart_service":
         state.service_web = "ok"
     elif action == "normalize_node":
-        state.anomaly_active = False
+        state.anomaly_active = state.mode == "chaos"
         state.cpu = None
         state.ram = None
         state.latency_ms = None

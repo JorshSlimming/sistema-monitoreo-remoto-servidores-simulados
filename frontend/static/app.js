@@ -1072,6 +1072,11 @@
         body: JSON.stringify({ scenario: "multi-node", node_id: "node-01", interval: 3.0 }),
       });
       if (!raw.ok) throw new Error(`HTTP ${raw.status}`);
+      const result = await raw.json().catch(() => ({}));
+      if (result && result.success === false) {
+        const details = result.details || {};
+        throw new Error(details.stderr || details.error || "scenario failed");
+      }
       // Refresh immediately so the chart starts showing data.
       await pollState();
       renderAll();

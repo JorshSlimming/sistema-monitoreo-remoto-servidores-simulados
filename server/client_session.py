@@ -54,8 +54,6 @@ class ClientSession:
             line, self._buffer = self._buffer.split(separator, 1)
             if line:
                 self._handle_line(line)
-        if self._buffer:
-            self._handle_line(self._buffer)
 
     def _handle_line(self, line: bytes) -> None:
         try:

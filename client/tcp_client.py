@@ -13,7 +13,6 @@ from typing import Any
 
 from shared.auth import get_token
 
-# ponytail: static modes; extend with config file or CLI if needed
 ANOMALY_MODES: dict[str, dict[str, Any]] = {
     "high-cpu": {"cpu": 95.0},
     "high-ram": {"ram": 94.0},
@@ -30,23 +29,16 @@ _BASE_METRIC: dict[str, Any] = {
     "event_log": "normal",
 }
 
-PROGRESSIVE_FACTOR = 0.35  # fraction of the gap closed per metric interval
+PROGRESSIVE_FACTOR = 0.35
 
 
 @dataclass
 class ClientState:
-    """Mutable per-client-process simulation state.
-
-    Persists across metric intervals so that commands produce real
-    changes in future metrics.
-    """
-
     mode: str
     anomaly_active: bool = True
     mitigation_active: bool = False
     mitigation_type: str | None = None
-    last_command: dict | None = None
-    # Progressive-override values (None = use anomaly/base)
+    last_command: dict[str, Any] | None = None
     cpu: float | None = None
     ram: float | None = None
     latency_ms: float | None = None
@@ -67,13 +59,33 @@ class ClientState:
         }
 
 
+def build_initial_state(mode: str) -> dict[str, Any]:
+    """Compatibility helper for dict-based callers/tests from origin/main."""
+    state = dict(_BASE_METRIC)
+    if mode in ANOMALY_MODES:
+        state.update(ANOMALY_MODES[mode])
+    return state
+
+
+def apply_command(state: dict[str, Any], action: str) -> None:
+    """Compatibility helper for dict-based callers/tests from origin/main."""
+    if action == "reduce_cpu":
+        state["cpu"] = _BASE_METRIC["cpu"]
+    elif action == "reduce_ram":
+        state["ram"] = _BASE_METRIC["ram"]
+    elif action == "fix_latency":
+        state["latency_ms"] = _BASE_METRIC["latency_ms"]
+    elif action == "restart_service":
+        state["service_web"] = _BASE_METRIC["service_web"]
+    elif action == "normalize_node":
+        state.update(_BASE_METRIC)
+
+
 def _progressive_tick(current: float, target: float) -> float:
-    """Move *current* one step toward *target*."""
     return current + (target - current) * PROGRESSIVE_FACTOR
 
 
 def _progressive_step(state: ClientState) -> None:
-    """Apply one progressive recovery tick; clear targets that reach baseline."""
     base = _BASE_METRIC
     if state.cpu is not None:
         state.cpu = _progressive_tick(state.cpu, base["cpu"])
@@ -87,7 +99,6 @@ def _progressive_step(state: ClientState) -> None:
         state.latency_ms = _progressive_tick(state.latency_ms, base["latency_ms"])
         if abs(state.latency_ms - base["latency_ms"]) < 1:
             state.latency_ms = None
-    # Auto-clear mitigation when fully recovered
     if (
         state.cpu is None
         and state.ram is None
@@ -100,7 +111,6 @@ def _progressive_step(state: ClientState) -> None:
 
 
 def _apply_command(action: str, state: ClientState) -> dict[str, Any]:
-    """Apply a command to *state* and return a snapshot taken *before* mutation."""
     before = state.snapshot()
     state.mitigation_active = True
     state.mitigation_type = action
@@ -112,9 +122,7 @@ def _apply_command(action: str, state: ClientState) -> dict[str, Any]:
     elif action == "reduce_ram":
         state.ram = ANOMALY_MODES.get(mode, {}).get("ram", _BASE_METRIC["ram"])
     elif action == "fix_latency":
-        state.latency_ms = ANOMALY_MODES.get(mode, {}).get(
-            "latency_ms", _BASE_METRIC["latency_ms"]
-        )
+        state.latency_ms = ANOMALY_MODES.get(mode, {}).get("latency_ms", _BASE_METRIC["latency_ms"])
     elif action == "restart_service":
         state.service_web = "ok"
     elif action == "normalize_node":
@@ -128,14 +136,11 @@ def _apply_command(action: str, state: ClientState) -> dict[str, Any]:
 
 
 def build_metric(
-    node_id: str, seq: int, mode: str, state: ClientState | None = None
+    node_id: str,
+    seq: int,
+    mode: str,
+    state: ClientState | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a metric dict for *node_id* with sequence *seq* in *mode*.
-
-    When *state* is provided the metric reflects the current simulation
-    state (mitigation, anomaly-active flag) and includes extra metadata
-    fields useful for the dashboard.
-    """
     token = get_token(node_id)
     if token is None:
         print(f"[client] WARNING: unknown node_id {node_id}, using fallback token")
@@ -147,11 +152,12 @@ def build_metric(
         **_BASE_METRIC,
         "token": token,
     }
-    # Apply anomaly overlay only when anomalies are active
-    if mode in ANOMALY_MODES and (state is None or state.anomaly_active):
+    if mode in ANOMALY_MODES and (state is None or not isinstance(state, ClientState) or state.anomaly_active):
         metric.update(ANOMALY_MODES[mode])
-    # Apply state-based overrides (from mitigation commands)
-    if state is not None:
+    if isinstance(state, dict):
+        metric.update(state)
+        return metric
+    if isinstance(state, ClientState):
         if state.cpu is not None:
             metric["cpu"] = state.cpu
         if state.ram is not None:
@@ -162,7 +168,6 @@ def build_metric(
             metric["service_web"] = state.service_web
         if state.event_log is not None:
             metric["event_log"] = state.event_log
-        # Extra enrichment for dashboard
         metric["scenario"] = state.mode
         metric["anomaly_active"] = state.anomaly_active
         metric["mitigation_active"] = state.mitigation_active
@@ -173,12 +178,10 @@ def build_metric(
 
 
 def encode_message(message: dict[str, Any]) -> bytes:
-    """Encode *message* as newline-terminated JSON bytes."""
     return (json.dumps(message, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def decode_message(raw_line: bytes) -> dict[str, Any]:
-    """Decode a single newline-terminated JSON line."""
     message = json.loads(raw_line.decode("utf-8").strip())
     if not isinstance(message, dict):
         raise ValueError("message must be a JSON object")
@@ -190,11 +193,6 @@ def _drain_socket(
     node_id: str,
     client_state: ClientState | None = None,
 ) -> None:
-    """Read and process all pending messages from the server.
-
-    When *client_state* is provided commands mutate the simulation state
-    and ACK payloads are enriched with before/after snapshots.
-    """
     try:
         while True:
             chunk = sock.recv(4096)
@@ -210,7 +208,7 @@ def _drain_socket(
                     continue
                 msg_type = message.get("type")
                 if msg_type == "command":
-                    action = message.get("action", "")
+                    action = str(message.get("action", ""))
                     ack: dict[str, Any] = {
                         "type": "ack",
                         "node_id": node_id,
@@ -221,48 +219,32 @@ def _drain_socket(
                         "timestamp": time.time(),
                         "message": f"ack {action}",
                     }
-                    # Apply command to simulation state
                     if client_state is not None:
                         before = _apply_command(action, client_state)
                         ack["before"] = before
                         ack["after"] = client_state.snapshot()
                     sock.sendall(encode_message(ack))
-                    print(
-                        f"[client] ack sent for command {message['command_id']}: "
-                        f"{action}"
-                    )
+                    print(f"[client] ack sent for command {message['command_id']}: {action or '?'}")
                 elif msg_type == "error":
                     print(f"[client] server error: {message}")
                 else:
                     print(f"[client] received: {message}")
     except socket.timeout:
-        pass  # expected — no more messages pending
+        pass
     except ConnectionResetError:
         raise
 
 
-def run_client(
-    host: str,
-    port: int,
-    node_id: str,
-    interval: float,
-    mode: str,
-) -> None:
-    """Run the persistent client loop.
-
-    Connects to *host*:*port*, sends a metric every *interval* seconds,
-    processes incoming commands, and reconnects every 5 seconds on failure.
-    """
+def run_client(host: str, port: int, node_id: str, interval: float, mode: str) -> None:
     print(f"[client] starting as {node_id} (mode={mode}, interval={interval}s)")
     state = ClientState(mode=mode, anomaly_active=(mode != "normal"))
     seq = 0
     while True:
         try:
             with socket.create_connection((host, port), timeout=5) as sock:
-                sock.settimeout(1.0)  # short drain timeout
+                sock.settimeout(1.0)
                 print(f"[client] connected to {host}:{port}")
                 while True:
-                    # Apply any progressive recovery before building this metric
                     _progressive_step(state)
                     metric = build_metric(node_id, seq, mode, state)
                     sock.sendall(encode_message(metric))
@@ -280,14 +262,11 @@ def run_client(
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments."""
     parser = argparse.ArgumentParser(description="Persistent monitoring client")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=5000, help="Server port")
     parser.add_argument("--node-id", default="node-01", help="Node identifier")
-    parser.add_argument(
-        "--interval", type=float, default=5.0, help="Seconds between metrics"
-    )
+    parser.add_argument("--interval", type=float, default=5.0, help="Seconds between metrics")
     parser.add_argument(
         "--mode",
         choices=["normal", *sorted(ANOMALY_MODES)],
@@ -298,7 +277,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Entry point for ``python -m client.tcp_client``."""
     args = parse_args()
     run_client(args.host, args.port, args.node_id, args.interval, args.mode)
 

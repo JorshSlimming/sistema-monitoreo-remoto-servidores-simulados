@@ -59,7 +59,7 @@ SQLite con tres tablas (ver `storage/store.py`):
 | `action` | TEXT | Acción (`reduce_cpu`, etc.) |
 | `reason` | TEXT | Motivo del comando |
 | `node_id` | TEXT | Nodo destino |
-| `status` | TEXT | `pending`, `timed_out` o `confirmed` |
+| `status` | TEXT | `pending`, `timed_out`, `confirmed` o `failed` |
 | `issued_at` | TEXT | Timestamp ISO 8601 |
 
 **Tabla `acks`** — confirmaciones de los clientes:

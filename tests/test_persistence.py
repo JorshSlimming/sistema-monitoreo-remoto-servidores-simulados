@@ -116,6 +116,7 @@ class PersistenceIntegrationTest(unittest.TestCase):
         time.sleep(0.1)
 
         self.assertGreaterEqual(self._store._count_acks(), 1)
+        self.assertEqual(self._store._command_status(cid), "confirmed")
 
     def test_command_status_updated_on_ack(self) -> None:
         """After ack, command status transitions to 'confirmed' in the DB."""

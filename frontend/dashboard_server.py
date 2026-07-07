@@ -82,6 +82,13 @@ def _db_stats() -> dict:
         return {"metrics": -1, "commands": -1, "acks": -1, "error": str(exc)}
 
 
+def _db_display_path() -> str:
+    try:
+        return str(_DB_PATH.relative_to(_PROJECT_ROOT))
+    except ValueError:
+        return str(_DB_PATH)
+
+
 def _clear_database() -> dict:
     """Clear runtime tables without deleting the SQLite file under a live server."""
     if not _DB_PATH.exists():
@@ -130,6 +137,7 @@ def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0,
     if not _server_reachable(monitor_host, _MONITOR_CONFIG.port):
         return {"success": False, "returncode": -1, "stdout": "", "stderr": "monitor server is not reachable"}
 
+    before = _db_stats()
     processes: list[subprocess.Popen[str]] = []
     try:
         if mode == "multi-node":
@@ -169,20 +177,29 @@ def _run_live_client(mode: str, node_id: str = "node-01", interval: float = 3.0,
 
         stdout_parts: list[str] = []
         stderr_parts: list[str] = []
-        success = True
+        returncodes: list[int | None] = []
         for proc in processes:
             _stop_process(proc)
             out, err = proc.communicate(timeout=2)
             stdout_parts.append(out)
             stderr_parts.append(err)
-            if proc.returncode not in (0, -15, None):
-                success = False
+            returncodes.append(proc.returncode)
+
+        after = _db_stats()
+        produced_data = any(
+            int(after.get(key, 0)) > int(before.get(key, 0))
+            for key in ("metrics", "commands", "acks")
+        )
+        success = produced_data
 
         return {
             "success": success,
             "returncode": 0 if success else 1,
             "stdout": "\n".join(p for p in stdout_parts if p),
             "stderr": "\n".join(p for p in stderr_parts if p),
+            "returncodes": returncodes,
+            "db_before": before,
+            "db_after": after,
         }
     except Exception as exc:
         for proc in processes:
@@ -337,7 +354,7 @@ def _build_status_payload() -> dict:
             "running": _server_reachable(_monitor_host(), _MONITOR_CONFIG.port),
         },
         "database": {
-            "path": str(_DB_PATH.relative_to(_PROJECT_ROOT)),
+            "path": _db_display_path(),
             "records": total_records,
         },
         "db_stats": db_stats,

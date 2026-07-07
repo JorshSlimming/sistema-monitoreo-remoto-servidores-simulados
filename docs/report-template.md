@@ -103,7 +103,7 @@ El detalle de campos y ejemplos se encuentra en `docs/contract_v1.md`.
 
 ### 7.2 Clientes simulados
 
-- `client/tcp_client.py`: cliente persistente con reconexión automática.
+- `client/tcp_client.py`: cliente persistente con reconexión automática y mitigación simulada de comandos.
 - Modos disponibles: `normal`, `high-cpu`, `high-ram`, `high-latency`, `service-failure`, `failed-event`.
 - Los clientes pueden ejecutar escenarios de demo mediante scripts.
 
@@ -139,7 +139,7 @@ La suite principal se ejecuta con:
 python3 -m unittest discover -s tests -v
 ```
 
-Estado actual verificado en este repositorio: **45 pruebas, todas pasan**.
+Estado actual verificado en este repositorio: **46 pruebas, todas pasan**.
 
 Las pruebas cubren:
 

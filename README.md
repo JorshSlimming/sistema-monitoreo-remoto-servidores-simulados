@@ -17,7 +17,7 @@ Sistema completo con:
 | Dashboard web en tiempo real | Implementado (polling `/api/state` cada 1s) |
 | Backend `/api/state` como fuente única de verdad | Implementado |
 | Persistencia SQLite (métricas, comandos, ACKs) | Implementado |
-| Pruebas unitarias y de integración | **45 pruebas — pasan** |
+| Pruebas unitarias y de integración | **46 pruebas — pasan** |
 | Captura de tráfico con Wireshark | Documentado |
 | Escaneo con Nmap | Documentado |
 
@@ -230,7 +230,7 @@ SQLite en `data/monitor.db` (configurable en `configs/server_config.json` o vari
 
 Tablas:
 - `metrics` — métricas recibidas con timestamp y estado de mitigación
-- `commands` — comandos emitidos con estado (`pending` / `confirmed` / `timed_out`)
+- `commands` — comandos emitidos con estado (`pending` / `confirmed` / `timed_out` / `failed`)
 - `acks` — confirmaciones de clientes con información de mitigación
 
 ## Evidencia para la entrega
